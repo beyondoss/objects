@@ -1,0 +1,13 @@
+[workspace]
+members = ["bench", "crates/index", "crates/server", "crates/storage", "xtask"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
