@@ -1,14 +1,19 @@
 {
   "name": "@beyond.dev/objects",
   "version": "0.1.0-dev",
+  "description": "S3-compatible object storage SDK for the Beyond platform.",
   "type": "module",
   "engines": { "node": ">=18" },
   "files": ["dist"],
   "exports": {
-    ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" }
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.mts"
+    }
   },
   "scripts": {
     "build": "tsdown",
+    "generate-types": "node scripts/generate-types.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

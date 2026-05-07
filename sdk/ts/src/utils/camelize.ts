@@ -1,7 +1,3 @@
-/**
- * Recursively transforms all object keys from snake_case to camelCase.
- * Values (including string literals used as discriminants) are untouched.
- */
 type CamelKey<S extends string> = S extends `${infer P}_${infer Q}${infer R}`
   ? `${P}${Uppercase<Q>}${CamelKey<R>}`
   : S;
@@ -17,11 +13,7 @@ export function camelize<T>(obj: T): Camelize<T> {
   if (Array.isArray(obj)) return obj.map(camelize) as Camelize<T>;
   if (typeof obj === "object") {
     const result: Record<string, unknown> = {};
-    for (
-      const [key, value] of Object.entries(
-        obj as Record<string, unknown>,
-      )
-    ) {
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
       const camel = key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
       result[camel] = camelize(value);
     }
@@ -30,10 +22,6 @@ export function camelize<T>(obj: T): Camelize<T> {
   return obj as Camelize<T>;
 }
 
-/**
- * Shallow snake_case transformation — only top-level keys are renamed.
- * Used for request bodies where nested values must not be touched.
- */
 export function snakenize(
   obj: Record<string, unknown>,
 ): Record<string, unknown> {

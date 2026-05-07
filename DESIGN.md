@@ -137,14 +137,14 @@ Multipart is not exposed in the native API — streaming handles large uploads d
 **One root token, bucket tokens derived via HMAC.** The platform gives you `OBJECTS_ROOT_TOKEN`. Bucket tokens are `HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket_name)` — deterministic, no extra storage.
 
 ```ts
-import { createObjectsClient, deriveToken } from "@beyond/objects";
+import { createObjectsClient, deriveToken } from "@beyond.dev/objects";
 
 // root token — full access to default bucket
 const objects = createObjectsClient();
 // reads OBJECTS_URL + OBJECTS_ROOT_TOKEN
 
-// derive a scoped token to hand off to a specific service
-const imagesToken = deriveToken(process.env.OBJECTS_ROOT_TOKEN, "images");
+// derive a scoped token to hand off to a specific service (HMAC-SHA256, async)
+const imagesToken = await deriveToken(process.env.OBJECTS_ROOT_TOKEN, "images");
 const images = createObjectsClient({ bucket: "images", token: imagesToken });
 ```
 
@@ -173,53 +173,93 @@ The base URL is provided via `OBJECTS_URL` env var. Custom domains are handled a
 
 ## TypeScript SDK
 
-```ts
-import { createObjectsClient } from "@beyond/objects";
+The SDK mirrors the Queue/KV/Auth pattern: every method returns a discriminated `{ data, error, response }` tuple. Errors are values, not exceptions.
 
-// default bucket
+```ts
+import {
+  createObjectsClient,
+  deriveToken,
+  ObjectsError,
+} from "@beyond.dev/objects";
+
+// default bucket — reads OBJECTS_URL + OBJECTS_ROOT_TOKEN
 const objects = createObjectsClient();
 
-// named bucket — isolated token
-const images = createObjectsClient({
-  bucket: "images",
-  token: process.env.IMAGES_TOKEN,
-});
+// scoped to a named bucket with a derived token
+const imagesToken = await deriveToken(process.env.OBJECTS_ROOT_TOKEN, "images");
+const images = createObjectsClient({ bucket: "images", token: imagesToken });
 
 // Upload
-const { url } = await images.put("avatar.png", file, {
+const { data, error, response } = await images.put("avatar.png", file, {
   contentType: "image/png",
   access: "public",
 });
-// → https://objects.my-project.beyond.page/images/avatar.png
+if (error) throw error; // or branch on error.code
+console.log(data.url, data.etag, data.size);
 
 // Conditional writes (CAS)
 await objects.put("jobs/lock", payload, { ifNoneMatch: "*" });
 await objects.put("config.json", updated, {
-  ifMatch: "\"d41d8cd98f00b204e9800998ecf8427e\"",
+  ifMatch:
+    "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\"",
 });
 
-// Download
-const stream = await images.get("avatar.png");
+// Download — `data` is a ReadableStream<Uint8Array>
+const { data: stream } = await images.get("avatar.png");
+
+// Range requests (returns 206; Content-Range is on `response.headers`)
+await images.get("video.mp4", { range: { start: 0, end: 1023 } });
+await images.get("video.mp4", { range: { suffix: 4096 } }); // last 4 KiB
+
+// User metadata — round-trips as `x-amz-meta-*` headers
+await images.put("avatar.png", file, {
+  metadata: { owner: "u_123", traceId: "abc" },
+});
 
 // Metadata
-const { size, etag, contentType, access } = await images.head("avatar.png");
+const { data: meta } = await images.head("avatar.png");
+// meta = { size, etag, contentType, access, lastModified, metadata }
 
-// Delete
+// Delete (idempotent — 404 returns no error)
 await images.delete("avatar.png");
 
-// Copy (server-side, within same bucket)
-// Move/rename
+// Move + copy (server-side, within same bucket)
 await images.move("original.jpg", "archived/original.jpg");
-
-// Copy
 await images.copy("original.jpg", "thumbnail.jpg");
 
+// Update access without moving
+await images.setAccess("avatar.png", "public");
+
 // List (prefix scan, cursor pagination)
-const { objects: files, nextCursor } = await images.list({
-  prefix: "avatars/",
-});
-const nextPage = await images.list({ prefix: "avatars/", cursor: nextCursor });
+const { data: page } = await images.list({ prefix: "avatars/" });
+for (const o of page.objects) console.log(o.key, o.url);
+if (page.nextCursor) {
+  await images.list({ prefix: "avatars/", cursor: page.nextCursor });
+}
+
+// Bucket admin (root-token only)
+await objects.buckets.create("images", { access: "private" });
+await objects.buckets.update("images", { access: "public" });
+await objects.buckets.list();
+await objects.buckets.delete("images");
+
+// URL builder — pure construction, no I/O
+const src = images.url("avatar.png");
+// → https://objects.my-project.beyond.page/v1/images/avatar.png
 ```
+
+### Client options
+
+| Option       | Type       | Default                          | Description                              |
+| ------------ | ---------- | -------------------------------- | ---------------------------------------- |
+| `url`        | `string`   | `process.env.OBJECTS_URL`        | Base URL of the beyond-objects server    |
+| `token`      | `string`   | `process.env.OBJECTS_ROOT_TOKEN` | Bearer token (root, or derived)          |
+| `bucket`     | `string`   | `"default"`                      | Bucket this client operates on           |
+| `fetch`      | `function` | `globalThis.fetch`               | Custom fetch (for pooling or test mocks) |
+| `timeout`    | `number`   | —                                | Per-request timeout in milliseconds      |
+| `retries`    | `number`   | `2`                              | Max retries on transient 5xx failures    |
+| `onRequest`  | `function` | —                                | Called before each request               |
+| `onResponse` | `function` | —                                | Called after each response with duration |
 
 ### What `list()` returns
 
@@ -229,16 +269,30 @@ const nextPage = await images.list({ prefix: "avatars/", cursor: nextCursor });
     {
       key: 'avatar.png',
       size: 48291,
-      etag: '"d41d8cd98f00b204e9800998ecf8427e"',
+      etag: '"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"',
       contentType: 'image/png',
       access: 'public',
-      lastModified: Date,
-      url: 'https://objects.my-project.beyond.page/images/avatar.png',
+      lastModified: '2026-05-07T12:00:00Z',
+      url: 'https://objects.my-project.beyond.page/v1/images/avatar.png',
     },
   ],
-  nextCursor: 'avatar2.png',  // pass as cursor to next list() call; absent when done
+  nextCursor: 'avatar2.png', // pass as cursor to next list() call; absent when done
 }
 ```
+
+### Errors
+
+Non-2xx responses populate the `error` field with an `ObjectsError`. The class shape mirrors Queue:
+
+```ts
+class ObjectsError extends Error {
+  readonly code: string; // e.g. "object_not_found", "etag_mismatch"
+  readonly status: number; // HTTP status
+  readonly hint?: string; // optional actionable guidance
+}
+```
+
+`code` is the stable contract. The full enum is `unauthorized | forbidden | object_not_found | bucket_not_found | bucket_not_empty | object_exists | etag_mismatch | invalid_key | bad_request | range_not_satisfiable | internal_error`.
 
 ---
 

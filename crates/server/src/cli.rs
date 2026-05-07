@@ -33,7 +33,8 @@ pub async fn run() -> Result<()> {
 fn generate_openapi() -> Result<()> {
     use utoipa::OpenApi as _;
     let doc = crate::routes::ApiDoc::openapi();
-    let json = serde_json::to_string_pretty(&doc)?;
+    let mut json = serde_json::to_string_pretty(&doc)?;
+    json.push('\n');
     std::fs::create_dir_all("openapi")?;
     std::fs::write("openapi/v1.json", json)?;
     println!("wrote openapi/v1.json");

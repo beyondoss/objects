@@ -1,12 +1,27 @@
-export { createObjectsClient, deriveKey } from "./client.js";
-export type {
-  CreateClientOptions,
-  HeadResult,
-  ListOptions,
-  ListResult,
-  ObjectItem,
-  ObjectsClient,
-  PutOptions,
+export {
+  type Access,
+  type Bucket,
+  type BucketsClient,
+  type Camelize,
+  type CopyResult,
+  type CreateBucketOptions,
+  createObjectsClient,
+  deriveToken,
+  type GetOptions,
+  type HeadResult,
+  type ListOptions,
+  type ListResult,
+  type ObjectItem,
+  type ObjectsClient,
+  type ObjectsClientOptions,
+  type ObjectsRequestEvent,
+  type ObjectsResponseEvent,
+  type ObjectsResult,
+  type PutBody,
+  type PutOptions,
+  type PutResult,
+  type Range,
+  type UpdateBucketOptions,
 } from "./client.js";
 export { ObjectsError } from "./errors.js";
 export type { components, operations, paths } from "./types.js";
