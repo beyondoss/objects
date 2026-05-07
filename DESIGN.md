@@ -7,7 +7,7 @@ Object storage for the Beyond platform. An S3-compatible object storage service 
 ## Goals
 
 - Store and retrieve arbitrary blobs (files, images, documents, etc.)
-- Simple, idiomatic, ergonomic TypeScript SDK 
+- Simple, idiomatic, ergonomic TypeScript SDK
 - S3-compatible wire protocol for existing tooling (AWS CLI, framework adapters)
 - Full CoW branching inherited from GlideFS — no extra work required
 - Top-tier performance: zero-copy reads, streaming writes, no buffering
