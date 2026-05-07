@@ -26,7 +26,7 @@ impl std::str::FromStr for AccessLevel {
         match s {
             "public" => Ok(Self::Public),
             "private" => Ok(Self::Private),
-            other => Err(crate::StorageError::Xattr(format!(
+            other => Err(crate::StorageError::InvalidValue(format!(
                 "unknown access level: {other}"
             ))),
         }

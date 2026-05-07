@@ -23,10 +23,14 @@ impl Storage {
                     continue;
                 }
             };
-            if meta.modified().map(|t| t < cutoff).unwrap_or(false)
-                && fs::remove_file(entry.path()).await.is_ok()
-            {
-                removed += 1;
+            if meta.modified().map(|t| t < cutoff).unwrap_or(false) {
+                match fs::remove_file(entry.path()).await {
+                    Ok(()) => removed += 1,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        tracing::warn!(path = ?entry.path(), error = %e, "gc: failed to remove temp file");
+                    }
+                }
             }
         }
         if removed > 0 {

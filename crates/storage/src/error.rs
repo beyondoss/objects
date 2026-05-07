@@ -1,13 +1,11 @@
 #[derive(Debug, thiserror::Error)]
+#[must_use = "errors must be handled or explicitly ignored with `let _ =`"]
 pub enum StorageError {
     #[error("object not found: {bucket}/{key}")]
     NotFound { bucket: String, key: String },
 
     #[error("bucket not found: {0}")]
     BucketNotFound(String),
-
-    #[error("bucket already exists: {0}")]
-    BucketExists(String),
 
     #[error("bucket not empty")]
     BucketNotEmpty,
@@ -20,6 +18,9 @@ pub enum StorageError {
 
     #[error("invalid key: {0}")]
     InvalidKey(String),
+
+    #[error("invalid value: {0}")]
+    InvalidValue(String),
 
     #[error("xattr: {0}")]
     Xattr(String),

@@ -5,30 +5,32 @@ use crate::write::validate_bucket;
 use crate::{Result, Storage, StorageError, xattr};
 
 impl Storage {
-    /// Create a bucket. Returns `BucketExists` if the directory already exists.
+    /// Create a bucket. Idempotent: succeeds silently if the bucket already exists.
     pub async fn create_bucket(&self, name: &str, access: AccessLevel) -> Result<()> {
         validate_bucket(name)?;
         let path = self.data_dir.join(name);
         match fs::create_dir(&path).await {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(StorageError::BucketExists(name.into()));
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
         xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())
     }
 
-    /// Delete a bucket. Returns `BucketNotEmpty` if it still contains objects.
+    /// Delete a bucket. Idempotent: succeeds silently if the bucket is already gone.
+    /// Returns `BucketNotEmpty` if it still contains objects.
     pub async fn delete_bucket(&self, name: &str) -> Result<()> {
         validate_bucket(name)?;
         let path = self.data_dir.join(name);
-        fs::remove_dir(&path).await.map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => StorageError::BucketNotFound(name.into()),
+        match fs::remove_dir(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             // POSIX: ENOTEMPTY maps to ErrorKind::DirectoryNotEmpty (stable since 1.82)
-            std::io::ErrorKind::DirectoryNotEmpty => StorageError::BucketNotEmpty,
-            _ => e.into(),
-        })
+            Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                Err(StorageError::BucketNotEmpty)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// List all buckets, sorted by name. Skips dot-prefixed directories (`.tmp`, `.multipart`).
@@ -140,24 +142,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_duplicate_errors() {
+    async fn create_is_idempotent() {
         let (s, _dir) = make_storage().await;
         s.create_bucket("b", AccessLevel::Private).await.unwrap();
-        assert!(matches!(
-            s.create_bucket("b", AccessLevel::Private)
-                .await
-                .unwrap_err(),
-            StorageError::BucketExists(_)
-        ));
+        s.create_bucket("b", AccessLevel::Private).await.unwrap();
     }
 
     #[tokio::test]
-    async fn delete_not_found_errors() {
+    async fn delete_is_idempotent() {
         let (s, _dir) = make_storage().await;
-        assert!(matches!(
-            s.delete_bucket("ghost").await.unwrap_err(),
-            StorageError::BucketNotFound(_)
-        ));
+        s.delete_bucket("ghost").await.unwrap();
     }
 
     #[tokio::test]

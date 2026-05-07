@@ -1,4 +1,5 @@
 use tokio::fs;
+use uuid::Uuid;
 
 use crate::types::ObjectInfo;
 use crate::write::{validate_bucket, validate_key};
@@ -8,7 +9,8 @@ impl Storage {
     pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo> {
         validate_bucket(bucket)?;
         validate_key(key)?;
-        let path = self.data_dir.join(bucket).join(key);
+        let bucket_path = self.data_dir.join(bucket);
+        let path = bucket_path.join(key);
         let meta = fs::metadata(&path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 StorageError::NotFound {
@@ -19,14 +21,18 @@ impl Storage {
                 e.into()
             }
         })?;
-        let (etag, content_type, access, user_metadata) = xattr::read_object(&path)?;
+        let attrs = xattr::read_object(&path)?;
+        let access = match attrs.access {
+            Some(a) => a,
+            None => xattr::read_access(&bucket_path)?.unwrap_or_default(),
+        };
         Ok(ObjectInfo {
             size: meta.len(),
-            etag,
+            etag: attrs.etag,
             last_modified: meta.modified()?,
-            content_type,
+            content_type: attrs.content_type,
             access,
-            user_metadata,
+            user_metadata: attrs.user_metadata,
         })
     }
 
@@ -34,15 +40,7 @@ impl Storage {
     pub async fn open_object(&self, bucket: &str, key: &str) -> Result<(ObjectInfo, fs::File)> {
         let info = self.head_object(bucket, key).await?;
         let path = self.data_dir.join(bucket).join(key);
-        let file = fs::File::open(&path).await?;
-        Ok((info, file))
-    }
-
-    pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<()> {
-        validate_bucket(bucket)?;
-        validate_key(key)?;
-        let path = self.data_dir.join(bucket).join(key);
-        fs::remove_file(&path).await.map_err(|e| {
+        let file = fs::File::open(&path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 StorageError::NotFound {
                     bucket: bucket.into(),
@@ -51,13 +49,27 @@ impl Storage {
             } else {
                 e.into()
             }
-        })
+        })?;
+        Ok((info, file))
+    }
+
+    /// Delete an object. Idempotent: succeeds silently if the object is already gone.
+    pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<()> {
+        validate_bucket(bucket)?;
+        validate_key(key)?;
+        let path = self.data_dir.join(bucket).join(key);
+        match fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Copy within or across buckets; returns the etag (same as source).
     ///
     /// Note: `tokio::fs::copy` does not preserve xattrs — we re-read them from the
-    /// source and set them on the destination explicitly.
+    /// source and set them on the destination explicitly. The copy goes through a
+    /// temp file so the destination either appears fully-formed or not at all.
     pub async fn copy_object(
         &self,
         src_bucket: &str,
@@ -79,13 +91,36 @@ impl Storage {
                 key: src_key.into(),
             });
         }
+        let tmp_dir = self.data_dir.join(".tmp");
+        fs::create_dir_all(&tmp_dir).await?;
+        let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
+        fs::copy(&src, &tmp_path).await.inspect_err(|_| {
+            let p = tmp_path.clone();
+            tokio::spawn(async move {
+                let _ = fs::remove_file(p).await;
+            });
+        })?;
+        let attrs = xattr::read_object(&src)?;
+        xattr::set_object(
+            &tmp_path,
+            &attrs.etag,
+            attrs.content_type.as_deref(),
+            attrs.access,
+            &attrs.user_metadata,
+        )
+        // attrs.access is None when the source was inheriting from its bucket;
+        // copying preserves "inherit" semantics by leaving the dst xattr unset too.
+        .inspect_err(|_| {
+            let p = tmp_path.clone();
+            tokio::spawn(async move {
+                let _ = fs::remove_file(p).await;
+            });
+        })?;
         if let Some(p) = dst.parent() {
             fs::create_dir_all(p).await?;
         }
-        fs::copy(&src, &dst).await?;
-        let (etag, content_type, access, user_metadata) = xattr::read_object(&src)?;
-        xattr::set_object(&dst, &etag, content_type.as_deref(), access, &user_metadata)?;
-        Ok(etag)
+        fs::rename(&tmp_path, &dst).await?;
+        Ok(attrs.etag)
     }
 
     /// Rename within same bucket or across buckets. Atomic when on the same volume.
@@ -143,11 +178,13 @@ mod tests {
     #[tokio::test]
     async fn copy_preserves_xattrs() {
         let (s, _dir) = make_storage().await;
-        let mut meta = ObjectMeta::default();
-        meta.content_type = Some("text/plain".into());
-        meta.access = Some(AccessLevel::Public);
+        let meta = ObjectMeta {
+            content_type: Some("text/plain".into()),
+            access: Some(AccessLevel::Public),
+            ..Default::default()
+        };
 
-        let etag = s
+        let (etag, _size) = s
             .write_object("bucket", "src.txt", Cursor::new(b"data"), meta, None)
             .await
             .unwrap();
@@ -188,10 +225,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_is_idempotent_not() {
+    async fn delete_is_idempotent() {
         let (s, _dir) = make_storage().await;
-        let err = s.delete_object("bucket", "ghost.txt").await.unwrap_err();
-        assert!(matches!(err, StorageError::NotFound { .. }));
+        s.delete_object("bucket", "ghost.txt").await.unwrap();
     }
 
     #[tokio::test]

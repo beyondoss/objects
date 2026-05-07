@@ -1,6 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, thiserror::Error)]
+#[must_use = "errors must be handled or explicitly ignored with `let _ =`"]
 pub enum IndexError {
     #[error(transparent)]
     Fjall(#[from] fjall::Error),
@@ -24,6 +28,12 @@ pub struct Index {
     partition: fjall::PartitionHandle,
 }
 
+// Compile-time proof that Index is safe to pass to spawn_blocking.
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Index>();
+};
+
 impl Index {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
@@ -45,16 +55,6 @@ impl Index {
         v
     }
 
-    fn decode(raw: &[u8], bucket: &str) -> Option<String> {
-        let prefix_len = bucket.len() + 1; // bucket bytes + null byte
-        if raw.len() <= prefix_len {
-            return None;
-        }
-        std::str::from_utf8(&raw[prefix_len..])
-            .ok()
-            .map(str::to_owned)
-    }
-
     pub fn insert(&self, bucket: &str, key: &str) -> Result<()> {
         Ok(self.partition.insert(Self::encode(bucket, key), b"")?)
     }
@@ -67,6 +67,10 @@ impl Index {
     ///
     /// `cursor` is the last key from the previous page (exclusive — the cursor key itself
     /// is not included in results). Pass `None` on the first page.
+    ///
+    /// **Precondition**: when `prefix` is non-empty, `cursor` must be a key returned by a
+    /// prior `scan` call with the same `bucket` and `prefix`. Passing a cursor from a
+    /// different prefix produces undefined results.
     pub fn scan(
         &self,
         bucket: &str,
@@ -77,6 +81,10 @@ impl Index {
         let lo = match cursor {
             // Start just after cursor by appending a null byte — exclusive bound.
             Some(c) => {
+                debug_assert!(
+                    prefix.is_empty() || c.starts_with(prefix),
+                    "cursor `{c}` does not start with prefix `{prefix}`"
+                );
                 let mut v = Self::encode(bucket, c);
                 v.push(b'\x00');
                 v
@@ -94,8 +102,13 @@ impl Index {
             }
             let (k, _) = item?;
             let raw: &[u8] = &k;
-            if let Some(key) = Self::decode(raw, bucket) {
-                results.push(key);
+            let prefix_len = bucket.len() + 1;
+            if raw.len() <= prefix_len {
+                continue;
+            }
+            match std::str::from_utf8(&raw[prefix_len..]) {
+                Ok(key) => results.push(key.to_owned()),
+                Err(_) => tracing::warn!("skipping index entry with non-UTF-8 key"),
             }
         }
         Ok(results)
@@ -117,19 +130,26 @@ impl Index {
                 tracing::warn!(path = ?entry.path(), "skipping non-UTF-8 bucket name");
                 continue;
             };
-            if bucket_name.starts_with('.') {
+            if bucket_name.starts_with('.') || !entry.file_type()?.is_dir() {
                 continue;
             }
-            if !entry.file_type()?.is_dir() {
-                continue;
-            }
-            self.walk_bucket(data_dir, bucket_name, "", &mut stats)?;
+
+            // Build a HashSet of currently indexed keys for this bucket so the
+            // filesystem walk can check membership in O(1) instead of a point
+            // lookup per file.
+            let indexed: HashSet<Vec<u8>> = self
+                .partition
+                .range(Self::encode(bucket_name, "")..hi_bound(bucket_name, ""))
+                .filter_map(|r| r.ok().map(|(k, _)| k.to_vec()))
+                .collect();
+
+            self.walk_bucket(data_dir, bucket_name, "", &mut stats, &indexed)?;
         }
 
         // Pass 2: index → filesystem (remove stale entries).
-        let all = self.partition.range::<Vec<u8>, _>(..);
+        // Collect first: can't call delete() while the partition iterator is live.
         let mut to_remove: Vec<(String, String)> = Vec::new();
-        for item in all {
+        for item in self.partition.range::<Vec<u8>, _>(..) {
             let (k, _) = item?;
             let raw: &[u8] = &k;
             if let Some(sep) = raw.iter().position(|&b| b == b'\x00') {
@@ -171,6 +191,7 @@ impl Index {
         bucket: &str,
         prefix: &str,
         stats: &mut ReconcileStats,
+        indexed: &HashSet<Vec<u8>>,
     ) -> Result<()> {
         let dir = if prefix.is_empty() {
             data_dir.join(bucket)
@@ -190,10 +211,10 @@ impl Index {
                 format!("{prefix}/{name}")
             };
             if entry.file_type()?.is_dir() {
-                self.walk_bucket(data_dir, bucket, &rel_key, stats)?;
+                self.walk_bucket(data_dir, bucket, &rel_key, stats, indexed)?;
             } else {
                 let k = Self::encode(bucket, &rel_key);
-                if self.partition.get(&k)?.is_none() {
+                if !indexed.contains(&k) {
                     self.insert(bucket, &rel_key)?;
                     stats.inserted += 1;
                 }

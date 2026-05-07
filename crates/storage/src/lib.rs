@@ -16,7 +16,7 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 
 #[derive(Clone, Debug)]
 pub struct Storage {
-    pub data_dir: PathBuf,
+    pub(crate) data_dir: PathBuf,
 }
 
 impl Storage {

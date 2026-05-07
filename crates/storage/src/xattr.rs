@@ -4,6 +4,15 @@ use std::path::Path;
 use crate::types::AccessLevel;
 use crate::{Result, StorageError};
 
+pub(crate) struct ObjectAttrs {
+    pub etag: String,
+    pub content_type: Option<String>,
+    /// `None` when the object has no explicit access xattr — caller resolves by
+    /// falling back to the bucket-level default.
+    pub access: Option<AccessLevel>,
+    pub user_metadata: HashMap<String, String>,
+}
+
 pub const ETAG: &str = "user.etag";
 pub const CONTENT_TYPE: &str = "user.content-type";
 pub const ACCESS: &str = "user.access";
@@ -21,14 +30,16 @@ pub fn set_object(
     path: &Path,
     etag: &str,
     content_type: Option<&str>,
-    access: AccessLevel,
+    access: Option<AccessLevel>,
     user_metadata: &HashMap<String, String>,
 ) -> Result<()> {
     set(path, ETAG, etag.as_bytes())?;
     if let Some(ct) = content_type {
         set(path, CONTENT_TYPE, ct.as_bytes())?;
     }
-    set(path, ACCESS, access.as_str().as_bytes())?;
+    if let Some(a) = access {
+        set(path, ACCESS, a.as_str().as_bytes())?;
+    }
     if !user_metadata.is_empty() {
         let json = serde_json::to_vec(user_metadata)
             .map_err(|e| StorageError::Xattr(format!("metadata serialize: {e}")))?;
@@ -37,10 +48,7 @@ pub fn set_object(
     Ok(())
 }
 
-#[allow(clippy::type_complexity)]
-pub fn read_object(
-    path: &Path,
-) -> Result<(String, Option<String>, AccessLevel, HashMap<String, String>)> {
+pub fn read_object(path: &Path) -> Result<ObjectAttrs> {
     let etag = get(path, ETAG)?
         .map(|b| String::from_utf8(b).map_err(|e| StorageError::Xattr(format!("etag: {e}"))))
         .transpose()?
@@ -50,14 +58,7 @@ pub fn read_object(
             String::from_utf8(b).map_err(|e| StorageError::Xattr(format!("content-type: {e}")))
         })
         .transpose()?;
-    let access = get(path, ACCESS)?
-        .map(|b| {
-            String::from_utf8(b)
-                .map_err(|e| StorageError::Xattr(format!("access: {e}")))?
-                .parse::<AccessLevel>()
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let access = read_access(path)?;
     let user_metadata = get(path, METADATA)?
         .map(|b| {
             serde_json::from_slice(&b)
@@ -65,7 +66,24 @@ pub fn read_object(
         })
         .transpose()?
         .unwrap_or_default();
-    Ok((etag, content_type, access, user_metadata))
+    Ok(ObjectAttrs {
+        etag,
+        content_type,
+        access,
+        user_metadata,
+    })
+}
+
+/// Read the access xattr at `path` (object or bucket directory). Returns `None`
+/// when the xattr is absent.
+pub fn read_access(path: &Path) -> Result<Option<AccessLevel>> {
+    get(path, ACCESS)?
+        .map(|b| {
+            String::from_utf8(b)
+                .map_err(|e| StorageError::Xattr(format!("access: {e}")))?
+                .parse::<AccessLevel>()
+        })
+        .transpose()
 }
 
 #[cfg(test)]
@@ -86,37 +104,33 @@ mod tests {
             &path,
             "\"abc123\"",
             Some("image/png"),
-            AccessLevel::Public,
+            Some(AccessLevel::Public),
             &meta,
         )
         .unwrap();
 
-        let (etag, ct, access, um) = read_object(&path).unwrap();
-        assert_eq!(etag, "\"abc123\"");
-        assert_eq!(ct.as_deref(), Some("image/png"));
-        assert_eq!(access, AccessLevel::Public);
-        assert_eq!(um.get("x-custom").map(String::as_str), Some("hello"));
+        let attrs = read_object(&path).unwrap();
+        assert_eq!(attrs.etag, "\"abc123\"");
+        assert_eq!(attrs.content_type.as_deref(), Some("image/png"));
+        assert_eq!(attrs.access, Some(AccessLevel::Public));
+        assert_eq!(
+            attrs.user_metadata.get("x-custom").map(String::as_str),
+            Some("hello")
+        );
     }
 
     #[test]
-    fn empty_metadata_not_written() {
+    fn absent_access_xattr() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("obj");
         std::fs::write(&path, b"").unwrap();
 
-        set_object(
-            &path,
-            "\"etag\"",
-            None,
-            AccessLevel::Private,
-            &HashMap::new(),
-        )
-        .unwrap();
+        set_object(&path, "\"etag\"", None, None, &HashMap::new()).unwrap();
 
-        let (_, ct, access, um) = read_object(&path).unwrap();
-        assert!(ct.is_none());
-        assert_eq!(access, AccessLevel::Private);
-        assert!(um.is_empty());
+        let attrs = read_object(&path).unwrap();
+        assert!(attrs.content_type.is_none());
+        assert_eq!(attrs.access, None);
+        assert!(attrs.user_metadata.is_empty());
     }
 
     #[test]

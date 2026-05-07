@@ -1,1 +1,1176 @@
-{}
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Beyond Objects",
+    "description": "Object storage with HMAC-derived bucket tokens, conditional writes, and prefix-paginated listing.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "1"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Health check. Probes the data directory and the listing index. Returns 200\nwhen both are reachable, 503 otherwise.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "description": "Healthy: data directory and listing index are reachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Degraded: data directory or listing index is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/buckets": {
+      "get": {
+        "tags": [
+          "buckets"
+        ],
+        "summary": "List all buckets, sorted by name.",
+        "operationId": "list_buckets",
+        "responses": {
+          "200": {
+            "description": "All buckets, sorted by name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListBucketsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid root token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "buckets"
+        ],
+        "summary": "Create a bucket. Idempotent: succeeds if the bucket already exists, but the\naccess level is updated to match the request.",
+        "operationId": "create_bucket",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBucketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Bucket created (or already existed with the same access level).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BucketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bucket name is invalid (contains `/`, is empty, or is the reserved `default`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid root token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/buckets/{name}": {
+      "get": {
+        "tags": [
+          "buckets"
+        ],
+        "summary": "Get bucket metadata.",
+        "operationId": "get_bucket",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bucket metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BucketResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid root token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bucket does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "buckets"
+        ],
+        "summary": "Delete a bucket. The bucket must be empty.",
+        "operationId": "delete_bucket",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Bucket deleted, or did not exist (idempotent)."
+          },
+          "401": {
+            "description": "Missing or invalid root token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bucket still contains objects — delete them first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "buckets"
+        ],
+        "summary": "Update bucket configuration.",
+        "operationId": "update_bucket",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBucketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated bucket metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BucketResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid root token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bucket does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/{bucket}": {
+      "get": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "List object keys in a bucket, with prefix scan and cursor pagination.",
+        "operationId": "list_objects",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "prefix",
+            "in": "query",
+            "description": "Only return keys with this prefix.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Last key of the previous page (exclusive).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max keys per page (default 1000, max 1000).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of objects, in ascending key order.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListObjectsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token for this bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/{bucket}/{key}": {
+      "get": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Download an object. Public objects are served without auth (and with\n`Access-Control-Allow-Origin: *`); private objects require a valid bearer\ntoken. Single-range requests (`Range: bytes=a-b`) return 206.",
+        "operationId": "get_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Object key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "description": "Single byte range, e.g. `bytes=0-1023`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Full object bytes.",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "206": {
+            "description": "Single-range partial content.",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "401": {
+            "description": "Object is private and no valid bearer token was presented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Object does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "416": {
+            "description": "Range header is malformed, multi-range, or outside the object size.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Stream-upload an object. Honors `If-None-Match: *` and `If-Match: \"<etag>\"`\nfor conditional writes.",
+        "operationId": "put_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Object key (may contain slashes).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Content-Type",
+            "in": "header",
+            "description": "MIME type stored alongside the object.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "description": "Set to `*` to write only when the object does not exist.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "description": "Quoted etag — write only when the current etag matches.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "X-Beyond-Access",
+            "in": "header",
+            "description": "`public` or `private` — overrides the bucket default.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Raw object bytes (streamed).",
+          "content": {
+            "application/octet-stream": {}
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Object written.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Conflicting or malformed conditional headers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token for this bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "Conditional write failed (`If-None-Match` matched, or `If-Match` etag did not).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Server-side copy from a source key in the same bucket.",
+        "operationId": "copy_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Destination key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CopyObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Destination object created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CopyObjectResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token for this bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Source object does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Delete an object. Idempotent.",
+        "operationId": "delete_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Object key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Object deleted, or did not exist (idempotent)."
+          },
+          "401": {
+            "description": "Missing or invalid bearer token for this bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "head": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Object metadata, identical headers to GET but no body.",
+        "operationId": "head_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Object key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object metadata in headers (no body)."
+          },
+          "401": {
+            "description": "Object is private and no valid bearer token was presented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Object does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Move (rename) an object or update its access level. Body is `{ \"key\": \"...\" }`,\n`{ \"access\": \"public\"|\"private\" }`, or both.",
+        "operationId": "patch_object",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Object key.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated metadata after the move and/or access change.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutObjectResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body did not contain `key` or `access`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token for this bucket.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Source object does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BucketResponse": {
+        "type": "object",
+        "description": "Bucket metadata.",
+        "required": [
+          "name",
+          "access"
+        ],
+        "properties": {
+          "access": {
+            "type": "string",
+            "description": "Default access level for objects in this bucket.",
+            "example": "private"
+          },
+          "name": {
+            "type": "string",
+            "description": "Bucket name.",
+            "example": "photos"
+          }
+        }
+      },
+      "CopyObjectRequest": {
+        "type": "object",
+        "description": "Body for `POST /v1/{bucket}/{key}` (server-side copy).",
+        "required": [
+          "source"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Source key within the same bucket. Cross-bucket copy is not yet supported.",
+            "example": "originals/u123.png"
+          }
+        }
+      },
+      "CopyObjectResponse": {
+        "type": "object",
+        "description": "Result of a successful server-side copy.",
+        "required": [
+          "key",
+          "etag"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "description": "Etag of the destination object (identical to the source's etag).",
+            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+          },
+          "key": {
+            "type": "string",
+            "description": "Destination key.",
+            "example": "thumbnails/u123.png"
+          }
+        }
+      },
+      "CreateBucketRequest": {
+        "type": "object",
+        "description": "Body for `POST /v1/buckets`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "access": {
+            "type": "string",
+            "description": "Default access level inherited by objects in this bucket when an object\nhas no explicit `access` xattr. Defaults to `private`.",
+            "example": "private"
+          },
+          "name": {
+            "type": "string",
+            "description": "Bucket name. Must be a single path segment (no slashes); cannot be the\nreserved `default` literal — that bucket is auto-managed.",
+            "example": "photos"
+          }
+        }
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "Wire-format error body. The `code` field is the stable contract — clients\nshould switch on `code`, not on `message` (which is human-readable and may\nchange between versions).",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Machine-readable error code. One of: `unauthorized`, `forbidden`,\n`object_not_found`, `bucket_not_found`, `bucket_not_empty`,\n`object_exists`, `etag_mismatch`, `invalid_key`, `bad_request`,\n`range_not_satisfiable`, `internal_error`.",
+            "example": "object_not_found"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional actionable guidance, when one is available."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable description. Suitable for logs and server-side debugging,\nnot for UI display.",
+            "example": "not found: photos/avatar.png"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Top-level error envelope returned on every non-2xx response.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody",
+            "description": "Error details."
+          }
+        }
+      },
+      "HealthzResponse": {
+        "type": "object",
+        "description": "Health check response.",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "`\"ok\"` when both the data directory and the listing index are reachable;\n`\"degraded\"` when one of them is not.",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "description": "Service version from `CARGO_PKG_VERSION` at compile time.",
+            "example": "0.1.0"
+          }
+        }
+      },
+      "ListBucketsResponse": {
+        "type": "object",
+        "description": "Result of `GET /v1/buckets`.",
+        "required": [
+          "buckets"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BucketResponse"
+            },
+            "description": "Buckets, sorted by name."
+          }
+        }
+      },
+      "ListObjectsResponse": {
+        "type": "object",
+        "description": "Page of objects matching a list query.",
+        "required": [
+          "objects"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Opaque cursor to pass as `?cursor=` to fetch the next page. `null` when\nthe page is final.",
+            "example": "avatars/u123.png"
+          },
+          "objects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObjectItem"
+            },
+            "description": "Objects on this page, in ascending key order."
+          }
+        }
+      },
+      "ObjectItem": {
+        "type": "object",
+        "description": "One entry in a list response.",
+        "required": [
+          "key",
+          "size",
+          "etag",
+          "access",
+          "last_modified",
+          "url"
+        ],
+        "properties": {
+          "access": {
+            "type": "string",
+            "description": "Effective access level — the object's own xattr, falling back to the\nbucket default when absent.",
+            "example": "private"
+          },
+          "content_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stored `Content-Type`, when one was provided at upload time.",
+            "example": "image/png"
+          },
+          "etag": {
+            "type": "string",
+            "description": "Strong entity tag (quoted hex BLAKE3 of the object bytes).",
+            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+          },
+          "key": {
+            "type": "string",
+            "description": "Object key (path within the bucket).",
+            "example": "avatars/u123.png"
+          },
+          "last_modified": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last-modified timestamp from the underlying file."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Object size in bytes.",
+            "example": 4096,
+            "minimum": 0
+          },
+          "url": {
+            "type": "string",
+            "description": "Absolute URL where the object can be fetched (uses `OBJECTS_URL` when set,\notherwise the bound address).",
+            "example": "https://objects.example.com/v1/photos/avatars/u123.png"
+          }
+        }
+      },
+      "PatchObjectRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /v1/{bucket}/{key}`. At least one field must be set.",
+        "properties": {
+          "access": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New access level. When set, the object's visibility xattr is updated.",
+            "example": "public"
+          },
+          "key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New key path. When set, the object is moved within the bucket.",
+            "example": "archive/avatars/u123.png"
+          }
+        }
+      },
+      "PutObjectResponse": {
+        "type": "object",
+        "description": "Result of a successful upload, move, or access change.",
+        "required": [
+          "key",
+          "etag",
+          "size"
+        ],
+        "properties": {
+          "etag": {
+            "type": "string",
+            "description": "Strong entity tag (quoted hex BLAKE3 of the object bytes).",
+            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+          },
+          "key": {
+            "type": "string",
+            "description": "Final key of the object (post-move for PATCH, otherwise the request key).",
+            "example": "avatars/u123.png"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Object size in bytes.",
+            "example": 4096,
+            "minimum": 0
+          }
+        }
+      },
+      "UpdateBucketRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /v1/buckets/{name}`.",
+        "required": [
+          "access"
+        ],
+        "properties": {
+          "access": {
+            "type": "string",
+            "description": "New default access level for objects in the bucket. Existing objects\nkeep their per-object xattr; only the inherited default changes.",
+            "example": "public"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "OBJECTS_ROOT_TOKEN or HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket)"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Health and service metadata."
+    },
+    {
+      "name": "objects",
+      "description": "Object lifecycle: upload, download, list, move, copy, delete."
+    },
+    {
+      "name": "buckets",
+      "description": "Bucket management."
+    }
+  ]
+}

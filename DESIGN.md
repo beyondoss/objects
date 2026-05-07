@@ -72,30 +72,31 @@ A bucket is a top-level directory. It exists when the directory exists. Its conf
 
 ```
 /data/
-  default/    ← default bucket (OBJECTS_KEY env var)
+  default/    ← default bucket (OBJECTS_ROOT_TOKEN env var)
   images/     ← scoped bucket (IMAGES_KEY env var)
   documents/  ← scoped bucket (DOCUMENTS_KEY env var)
 ```
 
 Creating a bucket = `mkdir` + `setxattr(token_hash, access)`. Deleting a bucket = `rmdir`. Listing buckets = `readdir` on `/data/`.
 
-**Token auth**: bucket tokens are derived from the root `OBJECTS_KEY` via HMAC:
+**Token auth**: bucket tokens are derived from the `OBJECTS_ROOT_TOKEN` via HMAC:
 
 ```
-bucket_token = HMAC-SHA256(OBJECTS_KEY, bucket_name)
+bucket_token = HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket_name)
 ```
 
-The service validates by recomputing `HMAC-SHA256(OBJECTS_KEY, bucket)` on every request and comparing to the presented bearer token. No per-bucket secret storage — just the root key in env. Rotating `OBJECTS_KEY` rotates all bucket tokens.
+The service validates by recomputing `HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket)` on every request and comparing to the presented bearer token. No per-bucket secret storage — just the root token in env. Rotating `OBJECTS_ROOT_TOKEN` rotates all bucket tokens.
 
-The default bucket validates against `OBJECTS_KEY` directly.
+The default bucket validates against `OBJECTS_ROOT_TOKEN` directly.
 
 ### Listing index — fjall
 
-`readdir()` on ext4/XFS returns entries in hash order, not alphabetical — useless for S3-style prefix scans with cursor pagination. We maintain a [fjall](https://github.com/fjall-rs/fjall) LSM-tree index alongside the filesystem, storing **keys only** per bucket. Nothing else — no size, no etag, no mtime. Those come from the filesystem.
+`readdir()` on ext4/XFS returns entries in hash order, not alphabetical — useless for S3-style prefix scans with cursor pagination. We maintain a [fjall](https://github.com/fjall-rs/fjall) LSM-tree index alongside the filesystem, storing **keys only** per bucket. Nothing else — no size, no etag, no mtime. Those come from the filesystem. One entry per stored object:
 
 ```
-index key:   "images/avatar.png"
-index value: (empty)
+bucket:      "images"
+key:         "avatar.png"
+value:       (empty — presence is the index)
 ```
 
 Prefix range scans via fjall's range iterator. Cursor pagination by seeking to the last seen key.
@@ -105,7 +106,7 @@ Prefix range scans via fjall's range iterator. Cursor pagination by seeking to t
 ### Write path
 
 ```
-1. Authenticate: HMAC-SHA256(OBJECTS_KEY, bucket) == bearer token
+1. Authenticate: HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket) == bearer token
 2. Stream body to temp path (.tmp/{uuid})
 3. Compute ETag (MD5) while streaming
 4. fsync
@@ -133,18 +134,18 @@ Multipart is not exposed in the native API — streaming handles large uploads d
 
 ## Access control
 
-**One root key, bucket tokens derived via HMAC.** The platform gives you `OBJECTS_KEY`. Bucket tokens are `HMAC-SHA256(OBJECTS_KEY, bucket_name)` — deterministic, no extra storage.
+**One root token, bucket tokens derived via HMAC.** The platform gives you `OBJECTS_ROOT_TOKEN`. Bucket tokens are `HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket_name)` — deterministic, no extra storage.
 
 ```ts
-import { createObjectsClient, deriveKey } from "@beyond/objects";
+import { createObjectsClient, deriveToken } from "@beyond/objects";
 
-// root key — full access to default bucket
+// root token — full access to default bucket
 const objects = createObjectsClient();
-// reads OBJECTS_URL + OBJECTS_KEY
+// reads OBJECTS_URL + OBJECTS_ROOT_TOKEN
 
-// derive a scoped key to hand off to a specific service
-const imagesKey = deriveKey(process.env.OBJECTS_KEY, "images");
-const images = createObjectsClient({ bucket: "images", key: imagesKey });
+// derive a scoped token to hand off to a specific service
+const imagesToken = deriveToken(process.env.OBJECTS_ROOT_TOKEN, "images");
+const images = createObjectsClient({ bucket: "images", token: imagesToken });
 ```
 
 **Per-object visibility**, set at write time, inherited from bucket default if absent:
@@ -493,8 +494,8 @@ Metrics registered on a separate `metrics_router` (not part of the main app rout
 ```rust
 #[derive(clap::Parser)]
 pub struct Config {
-    #[arg(long, env = "OBJECTS_KEY")]
-    pub objects_key: Secret<String>,
+    #[arg(long, env = "OBJECTS_ROOT_TOKEN")]
+    pub objects_root_token: Secret<String>,
 
     #[arg(long, env = "OBJECTS_DATA_DIR", default_value = "/data")]
     pub data_dir: PathBuf,
@@ -509,7 +510,7 @@ pub struct Config {
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Config")
-            .field("objects_key", &"[redacted]")
+            .field("objects_root_token", &"[redacted]")
             .field("data_dir", &self.data_dir)
             .field("port", &self.port)
             .field("otel_endpoint", &self.otel_endpoint)
@@ -702,7 +703,7 @@ legacy-peer-deps=true
 
 ```ts
 // src/index.ts
-export { createObjectsClient, deriveKey } from "./client.js";
+export { createObjectsClient, deriveToken } from "./client.js";
 export type {
   HeadResult,
   ListOptions,
@@ -861,6 +862,6 @@ Matrix: `ubuntu-latest` (amd64) + `ubuntu-24.04-arm` (arm64). Builds release bin
 - **Uploads**: body streamed directly to disk — no full-object buffering in memory
 - **Downloads**: `sendfile()`/`splice()` for zero-copy transfer
 - **GET hot path**: `stat()` + `getxattr()` + `sendfile()` — no DB, no network
-- **Auth**: `HMAC-SHA256(OBJECTS_KEY, bucket)` compared to bearer token — pure computation, no I/O
+- **Auth**: `HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket)` compared to bearer token — pure computation, no I/O
 - **Listing**: fjall range scan + filesystem `stat()` per result for size/mtime; both are local syscalls (microseconds each)
 - **GlideFS alignment**: sequential writes coalesce into 128 KB blocks naturally; sequential readahead kicks in automatically for large reads

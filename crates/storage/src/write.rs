@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use md5::{Digest, Md5};
@@ -9,6 +10,28 @@ use crate::types::{AccessLevel, ObjectMeta, WriteCondition};
 use crate::{Result, Storage, StorageError, xattr};
 
 impl Storage {
+    /// Update the access xattr on an existing object. Returns `NotFound` if the
+    /// object does not exist. Used by the metadata-PATCH path.
+    pub async fn update_object_access(
+        &self,
+        bucket: &str,
+        key: &str,
+        access: AccessLevel,
+    ) -> Result<()> {
+        validate_bucket(bucket)?;
+        validate_key(key)?;
+        let path = self.object_path(bucket, key);
+        if !path.try_exists()? {
+            return Err(StorageError::NotFound {
+                bucket: bucket.into(),
+                key: key.into(),
+            });
+        }
+        xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())
+    }
+}
+
+impl Storage {
     pub async fn write_object(
         &self,
         bucket: &str,
@@ -16,7 +39,7 @@ impl Storage {
         mut reader: impl tokio::io::AsyncRead + Unpin + Send,
         meta: ObjectMeta,
         condition: Option<WriteCondition>,
-    ) -> Result<String> {
+    ) -> Result<(String, u64)> {
         validate_bucket(bucket)?;
         validate_key(key)?;
 
@@ -25,7 +48,7 @@ impl Storage {
         fs::create_dir_all(&tmp_dir).await?;
         let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
 
-        let etag = stream_to_tmp(&tmp_path, &mut reader)
+        let (etag, size) = stream_to_tmp(&tmp_path, &mut reader)
             .await
             .inspect_err(|_| {
                 let p = tmp_path.clone();
@@ -34,12 +57,11 @@ impl Storage {
                 });
             })?;
 
-        let access = meta.access.unwrap_or(AccessLevel::Private);
         xattr::set_object(
             &tmp_path,
             &etag,
             meta.content_type.as_deref(),
-            access,
+            meta.access,
             &meta.user_metadata,
         )
         .inspect_err(|_| {
@@ -56,6 +78,7 @@ impl Storage {
                 // GlideFS deployment this window is sub-microsecond; the trade-off is
                 // accepted for Phase 1. A future upgrade path is `renameat2(RENAME_NOREPLACE)`
                 // on Linux, which makes the check-and-rename atomic at the syscall level.
+                // TODO: upgrade to renameat2(RENAME_NOREPLACE) on Linux for atomic CAS semantics.
                 if final_path.try_exists()? {
                     let _ = fs::remove_file(&tmp_path).await;
                     return Err(StorageError::ObjectExists {
@@ -87,8 +110,8 @@ impl Storage {
             fs::create_dir_all(parent).await?;
         }
         fs::rename(&tmp_path, &final_path).await?;
-        tracing::debug!(bucket, key, etag, "object written");
-        Ok(etag)
+        tracing::debug!(bucket, key, etag, size, "object written");
+        Ok((etag, size))
     }
 
     pub(crate) fn object_path(&self, bucket: &str, key: &str) -> PathBuf {
@@ -99,23 +122,28 @@ impl Storage {
 async fn stream_to_tmp(
     tmp_path: &std::path::Path,
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
-) -> Result<String> {
+) -> Result<(String, u64)> {
     let mut file = fs::File::create(tmp_path).await?;
     let mut hasher = Md5::new();
     let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
     loop {
         let n = reader.read(&mut buf).await?;
         if n == 0 {
             break;
         }
+        total += n as u64;
         hasher.update(&buf[..n]);
         file.write_all(&buf[..n]).await?;
     }
     file.flush().await?;
     file.sync_all().await?;
     let digest = hasher.finalize();
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("\"{hex}\""))
+    let mut hex = String::with_capacity(32);
+    for b in digest {
+        write!(hex, "{b:02x}").ok();
+    }
+    Ok((format!("\"{hex}\""), total))
 }
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {
@@ -152,7 +180,7 @@ mod tests {
     #[tokio::test]
     async fn write_and_head() {
         let (s, _dir) = make_storage().await;
-        let etag = s
+        let (etag, size) = s
             .write_object(
                 "bucket",
                 "hello.txt",
@@ -163,6 +191,7 @@ mod tests {
             .await
             .unwrap();
         assert!(etag.starts_with('"'));
+        assert_eq!(size, 5);
         let info = s.head_object("bucket", "hello.txt").await.unwrap();
         assert_eq!(info.size, 5);
         assert_eq!(info.etag, etag);
@@ -196,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn if_match_blocks_stale_update() {
         let (s, _dir) = make_storage().await;
-        let etag = s
+        let (etag, _size) = s
             .write_object(
                 "bucket",
                 "f.txt",
