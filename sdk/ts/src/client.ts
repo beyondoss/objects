@@ -11,7 +11,11 @@ export type { Camelize } from "./utils/camelize.js";
 
 export type Bucket = Camelize<components["schemas"]["BucketResponse"]>;
 export type ObjectItem = Camelize<components["schemas"]["ObjectItem"]>;
-export type ListResult = Camelize<components["schemas"]["ListObjectsResponse"]>;
+export interface ListResult {
+  objects: ObjectItem[];
+  /** Opaque cursor for the next page; `undefined` when the page is final. */
+  nextCursor: string | undefined;
+}
 export type Access = "public" | "private";
 
 // ── SDK option types ────────────────────────────────────────────────────────
@@ -49,7 +53,12 @@ export interface GetOptions {
 
 export interface ListOptions {
   prefix?: string;
-  cursor?: string;
+  /**
+   * Opaque cursor from `data.nextCursor` of the previous page. Explicitly
+   * accepts `undefined` so the natural pagination idiom — `cursor =
+   * data.nextCursor` — type-checks under `exactOptionalPropertyTypes`.
+   */
+  cursor?: string | undefined;
   limit?: number;
 }
 
@@ -199,19 +208,22 @@ function toObjectsError(raw: unknown, response: Response): ObjectsError {
 function wrap<T>(
   promise: Promise<{ data?: T; error?: unknown; response: Response }>,
 ): ObjectsResult<Camelize<T>> {
-  return promise.then(({ data, error, response }) =>
-    error !== undefined
-      ? {
-        data: undefined,
-        error: toObjectsError(error, response),
-        response,
-      }
-      : {
-        data: camelize(data) as Camelize<T>,
-        error: undefined,
-        response,
-      }
-  ) as unknown as ObjectsResult<Camelize<T>>;
+  return promise.then(
+    ({ data, error, response }):
+      | { data: Camelize<T>; error: undefined; response: Response }
+      | { data: undefined; error: ObjectsError; response: Response } =>
+      error !== undefined
+        ? {
+          data: undefined,
+          error: toObjectsError(error, response),
+          response,
+        }
+        : {
+          data: camelize(data) as Camelize<T>,
+          error: undefined,
+          response,
+        },
+  );
 }
 
 function buildFetch(
@@ -273,10 +285,10 @@ function readMetadata(headers: Headers): Record<string, string> {
 }
 
 function readEnv(name: string): string | undefined {
-  const proc = (globalThis as unknown as {
+  const g = globalThis as {
     process?: { env?: Record<string, string | undefined> };
-  }).process;
-  return proc?.env?.[name];
+  };
+  return g.process?.env?.[name];
 }
 
 // ── Factory ─────────────────────────────────────────────────────────────────
@@ -358,6 +370,9 @@ export function createObjectsClient(
       const init: RequestInit = {
         method: "PUT",
         headers,
+        // BodyInit narrows ArrayBuffer to exclude SharedArrayBuffer; Uint8Array
+        // backed by ArrayBufferLike is rejected by lib.dom even though fetch
+        // accepts it at runtime in every supported runtime.
         body: body as BodyInit,
       };
       if (body instanceof ReadableStream) {
@@ -501,13 +516,12 @@ export function createObjectsClient(
         response,
       };
     }
-    const raw = data as components["schemas"]["PutObjectResponse"];
     return {
       data: {
-        key: raw.key,
-        etag: raw.etag,
-        size: raw.size,
-        url: objectUrl(raw.key),
+        key: data.key,
+        etag: data.etag,
+        size: data.size,
+        url: objectUrl(data.key),
       },
       error: undefined,
       response,
@@ -536,27 +550,40 @@ export function createObjectsClient(
         response,
       };
     }
-    const raw = data as components["schemas"]["CopyObjectResponse"];
     return {
-      data: { key: raw.key, etag: raw.etag, url: objectUrl(raw.key) },
+      data: { key: data.key, etag: data.etag, url: objectUrl(data.key) },
       error: undefined,
       response,
     };
   });
 
-  const list: ObjectsClient["list"] = cmd("list", (listOpts) =>
-    wrap(
-      client.GET("/v1/{bucket}", {
-        params: {
-          path: { bucket },
-          query: {
-            ...(listOpts?.prefix !== undefined && { prefix: listOpts.prefix }),
-            ...(listOpts?.cursor !== undefined && { cursor: listOpts.cursor }),
-            ...(listOpts?.limit !== undefined && { limit: listOpts.limit }),
-          },
+  const list: ObjectsClient["list"] = cmd("list", async (listOpts) => {
+    const { data, error, response } = await client.GET("/v1/{bucket}", {
+      params: {
+        path: { bucket },
+        query: {
+          ...(listOpts?.prefix !== undefined && { prefix: listOpts.prefix }),
+          ...(listOpts?.cursor !== undefined && { cursor: listOpts.cursor }),
+          ...(listOpts?.limit !== undefined && { limit: listOpts.limit }),
         },
-      }),
-    ));
+      },
+    });
+    if (error) {
+      return {
+        data: undefined,
+        error: toObjectsError(error, response),
+        response,
+      };
+    }
+    return {
+      data: {
+        objects: camelize(data.objects),
+        nextCursor: data.next_cursor ?? undefined,
+      },
+      error: undefined,
+      response,
+    };
+  });
 
   // ── Bucket admin ───────────────────────────────────────────────────────────
 
@@ -580,9 +607,8 @@ export function createObjectsClient(
           response,
         };
       }
-      const raw = data as components["schemas"]["ListBucketsResponse"];
       return {
-        data: camelize(raw.buckets) as Bucket[],
+        data: camelize(data.buckets),
         error: undefined,
         response,
       };
