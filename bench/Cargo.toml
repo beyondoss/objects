@@ -5,8 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dev-dependencies]
+beyond-objects = { path = "../crates/server" }
 beyond-objects-storage = { path = "../crates/storage" }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+reqwest = { workspace = true }
+secrecy = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -17,6 +20,10 @@ harness = false
 
 [[bench]]
 name = "download_throughput"
+harness = false
+
+[[bench]]
+name = "http_download_throughput"
 harness = false
 
 [[bench]]

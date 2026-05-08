@@ -15,9 +15,9 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 fjall = "2"
 futures = "0.3"
-libc = "0.2"
 hex = "0.4"
 hmac = "0.12"
+libc = "0.2"
 md-5 = "0.10"
 mime = "0.3"
 opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }

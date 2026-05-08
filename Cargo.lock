@@ -689,8 +689,11 @@ dependencies = [
 name = "beyond-objects-bench"
 version = "0.1.0"
 dependencies = [
+ "beyond-objects",
  "beyond-objects-storage",
  "criterion",
+ "reqwest 0.13.3",
+ "secrecy",
  "tempfile",
  "tokio",
  "tokio-util",

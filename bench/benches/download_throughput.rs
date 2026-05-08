@@ -1,11 +1,8 @@
-//! Single-client download throughput against a tempfile-backed `Storage`.
+//! Download throughput benchmarks against a tempfile-backed `Storage`.
 //!
-//! Phase 2 uses `tokio_util::io::ReaderStream` over `tokio::fs::File`. The plan
-//! is to revisit a true `sendfile()` integration only if this benchmark
-//! identifies the read path as the constraint (per the Theory of Constraints
-//! discipline in CLAUDE.md). On a network-attached filesystem like GlideFS, the
-//! storage network is the dominant cost; the userspace memcpy here should be
-//! noise relative to network transit.
+//! Two groups:
+//!   - `download`            — single-client sequential reads across payload sizes
+//!   - `download_concurrent` — fixed 4 KiB payload, varying concurrency levels
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -29,7 +26,6 @@ fn bench_download(c: &mut Criterion) {
             .unwrap();
     });
 
-    // Prepare three sizes spanning small / medium / large.
     let sizes: Vec<(&str, usize)> = vec![
         ("4KiB", 4 * 1024),
         ("64KiB", 64 * 1024),
@@ -69,5 +65,65 @@ fn bench_download(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_download);
+fn bench_download_concurrent(c: &mut Criterion) {
+    const SIZE: usize = 4 * 1024;
+    const KEY: &str = "blob-4KiB";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = Arc::new(Storage::new(dir.path()));
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("rt");
+
+    rt.block_on(async {
+        tokio::fs::create_dir_all(dir.path().join("bench"))
+            .await
+            .unwrap();
+        let payload: Vec<u8> = (0..SIZE).map(|i| i as u8).collect();
+        storage
+            .write_object(
+                "bench",
+                KEY,
+                Cursor::new(payload),
+                ObjectMeta::default(),
+                None,
+            )
+            .await
+            .unwrap();
+    });
+
+    let concurrency_levels: Vec<usize> = vec![1, 4, 16, 64];
+
+    let mut group = c.benchmark_group("download_concurrent");
+    for &n in &concurrency_levels {
+        group.throughput(Throughput::Bytes((n * SIZE) as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
+            b.to_async(&rt).iter(|| {
+                let storage = Arc::clone(&storage);
+                async move {
+                    let tasks: Vec<_> = (0..n)
+                        .map(|_| {
+                            let storage = Arc::clone(&storage);
+                            tokio::spawn(async move {
+                                let (_info, mut file) =
+                                    storage.open_object("bench", KEY).await.unwrap();
+                                let mut sink = Vec::with_capacity(SIZE);
+                                file.read_to_end(&mut sink).await.unwrap();
+                                std::hint::black_box(sink);
+                            })
+                        })
+                        .collect();
+                    for t in tasks {
+                        t.await.unwrap();
+                    }
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_download, bench_download_concurrent);
 criterion_main!(benches);

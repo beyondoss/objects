@@ -158,12 +158,22 @@ fn fgetxattr_bytes(fd: RawFd, name: &str) -> Result<Option<Vec<u8>>> {
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn fgetxattr_sys(fd: RawFd, name: *const libc::c_char, buf: *mut libc::c_void, size: usize) -> libc::ssize_t {
+unsafe fn fgetxattr_sys(
+    fd: RawFd,
+    name: *const libc::c_char,
+    buf: *mut libc::c_void,
+    size: usize,
+) -> libc::ssize_t {
     unsafe { libc::fgetxattr(fd, name, buf, size) }
 }
 
 #[cfg(target_os = "macos")]
-unsafe fn fgetxattr_sys(fd: RawFd, name: *const libc::c_char, buf: *mut libc::c_void, size: usize) -> libc::ssize_t {
+unsafe fn fgetxattr_sys(
+    fd: RawFd,
+    name: *const libc::c_char,
+    buf: *mut libc::c_void,
+    size: usize,
+) -> libc::ssize_t {
     unsafe { libc::fgetxattr(fd, name, buf, size, 0, 0) }
 }
 
