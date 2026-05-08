@@ -1,21 +1,18 @@
-//! Download throughput benchmarks through the full axum HTTP stack.
+//! Upload throughput benchmarks through the full axum HTTP stack.
 //!
-//! Complements `download_throughput.rs` (storage layer only) so we can see
-//! how much overhead routing, header parsing, and the response body path add.
+//! Complements `upload_throughput.rs` (storage layer only) to show how much
+//! overhead routing, header parsing, and body ingestion add.
 //!
-//! Sizes span both sides of the INLINE_THRESHOLD (4 MiB):
-//!   - ≤4 MiB: single spawn_blocking reads entire file (inline path)
-//!   - >4 MiB: tokio::fs streaming via ReaderStream
+//! Sizes span the same range as the download bench so comparisons are direct.
 //!
 //! Two groups:
-//!   - `download_http`            — single-client sequential GETs across payload sizes
-//!   - `download_http_concurrent` — 4 KiB and 1 MiB, varying concurrency levels
+//!   - `upload_http`            — single-client sequential PUTs across payload sizes
+//!   - `upload_http_concurrent` — 4 KiB and 1 MiB payloads, varying concurrency
 
-use std::io::Cursor;
 use std::sync::Arc;
 
 use beyond_objects::Config;
-use beyond_objects_storage::{AccessLevel, ObjectMeta, Storage};
+use beyond_objects_storage::{AccessLevel, Storage};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use reqwest::Client;
 
@@ -23,16 +20,14 @@ const BUCKET: &str = "bench";
 
 struct Env {
     url: String,
+    token: String,
     client: Client,
-    // Keep the tempdir alive for the entire benchmark run.
     _dir: tempfile::TempDir,
 }
 
 fn setup() -> (Env, tokio::runtime::Runtime) {
-    let (tx, rx) = std::sync::mpsc::channel::<(String, tempfile::TempDir)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(String, String, tempfile::TempDir)>();
 
-    // Server runs on its own dedicated multi-thread runtime in a background
-    // thread so benchmark client tasks and server tasks don't share workers.
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -45,32 +40,11 @@ fn setup() -> (Env, tokio::runtime::Runtime) {
             tokio::fs::create_dir_all(&data_dir).await.unwrap();
             tokio::fs::create_dir_all(&index_dir).await.unwrap();
 
-            // Seed objects directly via the storage layer before the server
-            // starts so the reconciler picks them up without HTTP auth setup.
             let storage = Storage::new(&data_dir);
             storage
-                .create_bucket(BUCKET, AccessLevel::Public)
+                .create_bucket(BUCKET, AccessLevel::Private)
                 .await
                 .unwrap();
-            for (label, size) in [
-                ("4KiB", 4 * 1024usize),
-                ("64KiB", 64 * 1024),
-                ("1MiB", 1024 * 1024),
-                ("8MiB", 8 * 1024 * 1024),
-                ("16MiB", 16 * 1024 * 1024),
-            ] {
-                let payload: Vec<u8> = (0..size).map(|i| i as u8).collect();
-                storage
-                    .write_object(
-                        BUCKET,
-                        label,
-                        Cursor::new(payload),
-                        ObjectMeta::default(),
-                        None,
-                    )
-                    .await
-                    .unwrap();
-            }
 
             let config = Config {
                 objects_root_token: secrecy::Secret::new("bench-token".into()),
@@ -85,12 +59,12 @@ fn setup() -> (Env, tokio::runtime::Runtime) {
                 sync_linger_ms: 0,
             };
             let server = beyond_objects::test_support::start(config).await.unwrap();
-            tx.send((server.url, dir)).unwrap();
+            tx.send((server.url, server.root_token, dir)).unwrap();
             std::future::pending::<()>().await
         });
     });
 
-    let (url, dir) = rx.recv().unwrap();
+    let (url, token, dir) = rx.recv().unwrap();
     let client = Client::builder().build().unwrap();
     let bench_rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -100,6 +74,7 @@ fn setup() -> (Env, tokio::runtime::Runtime) {
     (
         Env {
             url,
+            token,
             client,
             _dir: dir,
         },
@@ -107,10 +82,10 @@ fn setup() -> (Env, tokio::runtime::Runtime) {
     )
 }
 
-fn bench_download_http(c: &mut Criterion) {
+fn bench_upload_http(c: &mut Criterion) {
     let (env, rt) = setup();
+    let env = Arc::new(env);
 
-    // Covers both inline path (≤4 MiB) and streaming path (>4 MiB).
     let sizes = [
         ("4KiB", 4 * 1024usize),
         ("64KiB", 64 * 1024),
@@ -119,32 +94,39 @@ fn bench_download_http(c: &mut Criterion) {
         ("16MiB", 16 * 1024 * 1024),
     ];
 
-    let mut group = c.benchmark_group("download_http");
+    let mut group = c.benchmark_group("upload_http");
     for (label, size) in sizes {
-        let url = format!("{}/v1/{BUCKET}/{label}", env.url);
+        let payload: Arc<Vec<u8>> = Arc::new((0..size).map(|i| i as u8).collect());
+        let url = Arc::new(format!("{}/v1/{BUCKET}/{label}", env.url));
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(label), &url, |b, url| {
-            b.to_async(&rt).iter(|| async {
-                let bytes = env
-                    .client
-                    .get(url)
-                    .send()
-                    .await
-                    .unwrap()
-                    .bytes()
-                    .await
-                    .unwrap();
-                std::hint::black_box(bytes);
+            b.to_async(&rt).iter(|| {
+                let env = Arc::clone(&env);
+                let payload = Arc::clone(&payload);
+                let url = Arc::clone(url);
+                async move {
+                    let resp = env
+                        .client
+                        .put(url.as_str())
+                        .bearer_auth(&env.token)
+                        .header("content-type", "application/octet-stream")
+                        .body(payload.as_slice().to_vec())
+                        .send()
+                        .await
+                        .unwrap();
+                    assert!(
+                        resp.status().is_success(),
+                        "upload failed: {}",
+                        resp.status()
+                    );
+                }
             });
         });
     }
     group.finish();
 }
 
-fn bench_download_http_concurrent(c: &mut Criterion) {
-    // Both concurrency sweeps share ONE server so results are comparable.
-    // "4KiB" exercises the inline-read path (< 4 MiB threshold).
-    // "1MiB" compares inline-read vs streaming at a size that matters.
+fn bench_upload_http_concurrent(c: &mut Criterion) {
     const SMALL: usize = 4 * 1024;
     const LARGE: usize = 1024 * 1024;
 
@@ -154,30 +136,35 @@ fn bench_download_http_concurrent(c: &mut Criterion) {
     let concurrency_levels = [1usize, 4, 16, 64];
 
     for (key, size) in [("4KiB", SMALL), ("1MiB", LARGE)] {
-        let mut group = c.benchmark_group(format!("download_http_concurrent_{key}"));
+        let payload: Arc<Vec<u8>> = Arc::new((0..size).map(|i| i as u8).collect());
+        let mut group = c.benchmark_group(format!("upload_http_concurrent_{key}"));
         for &n in &concurrency_levels {
-            let url = Arc::new(format!("{}/v1/{BUCKET}/{key}", env.url));
             group.throughput(Throughput::Bytes((n * size) as u64));
             group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
                 b.to_async(&rt).iter(|| {
                     let env = Arc::clone(&env);
-                    let url = Arc::clone(&url);
+                    let payload = Arc::clone(&payload);
                     async move {
                         let tasks: Vec<_> = (0..n)
-                            .map(|_| {
+                            .map(|i| {
                                 let env = Arc::clone(&env);
-                                let url = Arc::clone(&url);
+                                let payload = Arc::clone(&payload);
                                 tokio::spawn(async move {
-                                    let bytes = env
+                                    let url = format!("{}/v1/{BUCKET}/{key}-{i}", env.url);
+                                    let resp = env
                                         .client
-                                        .get(url.as_str())
+                                        .put(&url)
+                                        .bearer_auth(&env.token)
+                                        .header("content-type", "application/octet-stream")
+                                        .body(payload.as_slice().to_vec())
                                         .send()
                                         .await
-                                        .unwrap()
-                                        .bytes()
-                                        .await
                                         .unwrap();
-                                    std::hint::black_box(bytes);
+                                    assert!(
+                                        resp.status().is_success(),
+                                        "upload failed: {}",
+                                        resp.status()
+                                    );
                                 })
                             })
                             .collect();
@@ -192,5 +179,5 @@ fn bench_download_http_concurrent(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_download_http, bench_download_http_concurrent);
+criterion_group!(benches, bench_upload_http, bench_upload_http_concurrent);
 criterion_main!(benches);

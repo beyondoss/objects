@@ -29,3 +29,7 @@ harness = false
 [[bench]]
 name = "upload_throughput"
 harness = false
+
+[[bench]]
+name = "http_upload_throughput"
+harness = false

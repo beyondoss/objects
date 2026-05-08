@@ -11,8 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use tokio_util::io::{ReaderStream, StreamReader};
+use tokio_util::io::StreamReader;
 use utoipa::ToSchema;
 
 use beyond_objects_storage::{AccessLevel, ObjectMeta, StorageError, WriteCondition};
@@ -217,7 +216,7 @@ pub async fn get_object(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    let (info, mut file) = state.storage.open_object(&bucket, &key).await?;
+    let (info, file) = state.storage.open_object(&bucket, &key).await?;
     enforce_object_auth(&state, &bucket, &info.access, &headers)?;
 
     let mut resp_headers = build_object_headers(&info);
@@ -242,13 +241,30 @@ pub async fn get_object(
             .map_err(|_| ApiError::Internal(anyhow::anyhow!("content-length encode")))?,
     );
 
-    if start > 0 {
-        file.seek(SeekFrom::Start(start))
-            .await
-            .map_err(|e| ApiError::Internal(anyhow::anyhow!("seek: {e}")))?;
-    }
-    let limited = file.take(length);
-    let body = Body::from_stream(ReaderStream::with_capacity(limited, 128 * 1024));
+    // mmap the requested byte range in a single spawn_blocking: one context
+    // switch for any object size. tokio::fs::File serializes each poll_read
+    // into a separate spawn_blocking dispatch (~50 µs each), so streaming a
+    // 1 MiB object costs ~400 µs in dispatch overhead alone. mmap amortizes
+    // that to a single dispatch regardless of size.
+    let body = if length == 0 {
+        Body::empty()
+    } else {
+        let file_std = file.into_std().await;
+        let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
+            // SAFETY: objects are immutable after write; no concurrent mutation.
+            let mmap = unsafe {
+                memmap2::MmapOptions::new()
+                    .offset(start)
+                    .len(length as usize)
+                    .map(&file_std)?
+            };
+            Ok(bytes::Bytes::copy_from_slice(&mmap))
+        })
+        .await
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("read task: {e}")))?
+        .map_err(|e| ApiError::Internal(anyhow::anyhow!("mmap: {e}")))?;
+        Body::from(data)
+    };
 
     Ok((status, resp_headers, body).into_response())
 }

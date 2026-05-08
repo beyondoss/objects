@@ -30,6 +30,8 @@ fn bench_download(c: &mut Criterion) {
         ("4KiB", 4 * 1024),
         ("64KiB", 64 * 1024),
         ("1MiB", 1024 * 1024),
+        ("8MiB", 8 * 1024 * 1024),
+        ("16MiB", 16 * 1024 * 1024),
     ];
 
     for (label, size) in &sizes {

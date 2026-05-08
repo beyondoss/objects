@@ -24,8 +24,7 @@ use s3s::dto::{
     UploadPartOutput,
 };
 use s3s::{S3, S3Error, S3Request, S3Response, S3Result, s3_error};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use tokio_util::io::{ReaderStream, StreamReader};
+use tokio_util::io::StreamReader;
 
 use beyond_objects_storage::{
     AccessLevel, CompletedPart as StorageCompletedPart, ObjectInfo, ObjectMeta, WriteCondition,
@@ -203,7 +202,7 @@ impl S3 for ObjectsS3 {
         let bucket = input.bucket;
         let key = input.key;
 
-        let (info, mut file) = self
+        let (info, file) = self
             .state
             .storage
             .open_object(&bucket, &key)
@@ -238,13 +237,27 @@ impl S3 for ObjectsS3 {
         };
         let length = end.saturating_sub(start);
 
-        if start > 0 {
-            file.seek(SeekFrom::Start(start))
-                .await
-                .map_err(|e| s3_error!(InternalError, "seek: {e}"))?;
-        }
-        let limited = file.take(length);
-        let body = StreamingBlob::wrap(ReaderStream::new(limited));
+        let body = if length == 0 {
+            StreamingBlob::wrap(futures::stream::empty::<std::io::Result<bytes::Bytes>>())
+        } else {
+            let file_std = file.into_std().await;
+            let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
+                // SAFETY: objects are immutable after write; no concurrent mutation.
+                let mmap = unsafe {
+                    memmap2::MmapOptions::new()
+                        .offset(start)
+                        .len(length as usize)
+                        .map(&file_std)?
+                };
+                Ok(bytes::Bytes::copy_from_slice(&mmap))
+            })
+            .await
+            .map_err(|e| s3_error!(InternalError, "read task: {e}"))?
+            .map_err(|e| s3_error!(InternalError, "mmap: {e}"))?;
+            StreamingBlob::wrap(futures::stream::once(async move {
+                Ok::<_, std::io::Error>(data)
+            }))
+        };
 
         let content_range = if input.range.is_some() {
             Some(format!("bytes {}-{}/{}", start, end - 1, info.size))
