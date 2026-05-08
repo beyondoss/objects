@@ -41,6 +41,16 @@ pub struct Config {
     /// the bind address.
     #[arg(long, env = "OBJECTS_URL")]
     pub public_url: Option<String>,
+
+    /// Write-sync linger window in milliseconds.
+    ///
+    /// Concurrent uploads within this window share a single fdatasync, turning N
+    /// filesystem flushes into 1 on Linux ext4/xfs. Set to 0 to disable (each
+    /// upload syncs immediately). Tradeoff: up to SYNC_LINGER_MS added tail
+    /// latency; in-flight unsynced data is lost on crash (same as any in-flight
+    /// request).
+    #[arg(long, env = "SYNC_LINGER_MS", default_value = "5")]
+    pub sync_linger_ms: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -55,6 +65,7 @@ impl std::fmt::Debug for Config {
             .field("otlp_enabled", &self.otlp_enabled)
             .field("otlp_endpoint", &self.otlp_endpoint)
             .field("public_url", &self.public_url)
+            .field("sync_linger_ms", &self.sync_linger_ms)
             .finish()
     }
 }

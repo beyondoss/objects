@@ -123,8 +123,21 @@ impl Storage {
         fs::create_dir_all(&tmp_dir).await?;
         let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
 
-        let (etag, _size) = stream_to_tmp(&tmp_path, &mut reader)
+        let (etag, _size, file) = stream_to_tmp(&tmp_path, &mut reader).await.inspect_err(
+            |_| {
+                let p = tmp_path.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = fs::remove_file(&p).await {
+                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                    }
+                });
+            },
+        )?;
+
+        self.sync
+            .sync_file(file)
             .await
+            .map_err(crate::StorageError::Io)
             .inspect_err(|_| {
                 let p = tmp_path.clone();
                 tokio::spawn(async move {

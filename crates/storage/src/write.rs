@@ -1,9 +1,8 @@
-use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use md5::{Digest, Md5};
 use tokio::fs;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use uuid::Uuid;
 
 use crate::types::{AccessLevel, ObjectMeta, WriteCondition};
@@ -44,12 +43,24 @@ impl Storage {
         validate_key(key)?;
 
         let final_path = self.object_path(bucket, key);
-        let tmp_dir = self.data_dir.join(".tmp");
-        fs::create_dir_all(&tmp_dir).await?;
-        let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
+        fs::create_dir_all(&self.tmp_dir).await?;
+        let tmp_path = self.tmp_dir.join(Uuid::new_v4().to_string());
 
-        let (etag, size) = stream_to_tmp(&tmp_path, &mut reader)
+        let (etag, size, file) = stream_to_tmp(&tmp_path, &mut reader)
             .await
+            .inspect_err(|_| {
+                let p = tmp_path.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = fs::remove_file(&p).await {
+                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                    }
+                });
+            })?;
+
+        self.sync
+            .sync_file(file)
+            .await
+            .map_err(StorageError::Io)
             .inspect_err(|_| {
                 let p = tmp_path.clone();
                 tokio::spawn(async move {
@@ -116,7 +127,10 @@ impl Storage {
             None => {}
         }
 
-        if let Some(parent) = final_path.parent() {
+        // Only needed for keys with path separators; bucket dir already exists for flat keys.
+        if key.contains('/')
+            && let Some(parent) = final_path.parent()
+        {
             fs::create_dir_all(parent).await?;
         }
         fs::rename(&tmp_path, &final_path).await?;
@@ -129,11 +143,16 @@ impl Storage {
     }
 }
 
+/// Stream `reader` to a temp file, returning `(etag, size, file)`.
+///
+/// The file is flushed but not synced — the caller is responsible for calling
+/// `sync_data()` (directly or via `SyncGroup`) before making the file visible.
 pub(crate) async fn stream_to_tmp(
     tmp_path: &std::path::Path,
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
-) -> Result<(String, u64)> {
-    let mut file = fs::File::create(tmp_path).await?;
+) -> Result<(String, u64, fs::File)> {
+    let file = fs::File::create(tmp_path).await?;
+    let mut buf_file = BufWriter::with_capacity(256 * 1024, file);
     let mut hasher = Md5::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut total: u64 = 0;
@@ -144,16 +163,12 @@ pub(crate) async fn stream_to_tmp(
         }
         total += n as u64;
         hasher.update(&buf[..n]);
-        file.write_all(&buf[..n]).await?;
+        buf_file.write_all(&buf[..n]).await?;
     }
-    file.flush().await?;
-    file.sync_all().await?;
-    let digest = hasher.finalize();
-    let mut hex = String::with_capacity(32);
-    for b in digest {
-        write!(hex, "{b:02x}").ok();
-    }
-    Ok((format!("\"{hex}\""), total))
+    buf_file.flush().await?;
+    let file = buf_file.into_inner();
+    let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
+    Ok((etag, total, file))
 }
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {

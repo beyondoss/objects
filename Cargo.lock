@@ -710,6 +710,8 @@ dependencies = [
 name = "beyond-objects-storage"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "hex",
  "md-5 0.10.6",
  "serde",
  "serde_json",

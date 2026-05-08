@@ -248,7 +248,7 @@ pub async fn get_object(
             .map_err(|e| ApiError::Internal(anyhow::anyhow!("seek: {e}")))?;
     }
     let limited = file.take(length);
-    let body = Body::from_stream(ReaderStream::new(limited));
+    let body = Body::from_stream(ReaderStream::with_capacity(limited, 128 * 1024));
 
     Ok((status, resp_headers, body).into_response())
 }

@@ -18,3 +18,7 @@ harness = false
 [[bench]]
 name = "download_throughput"
 harness = false
+
+[[bench]]
+name = "upload_throughput"
+harness = false

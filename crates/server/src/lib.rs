@@ -264,7 +264,12 @@ pub async fn serve(config: Config) -> Result<()> {
     tokio::fs::create_dir_all(&config.data_dir).await?;
     tokio::fs::create_dir_all(&config.index_dir).await?;
 
-    let storage = Storage::new(&config.data_dir);
+    let storage = if config.sync_linger_ms > 0 {
+        let linger = std::time::Duration::from_millis(config.sync_linger_ms);
+        Storage::with_linger(&config.data_dir, linger)
+    } else {
+        Storage::new(&config.data_dir)
+    };
     let index = Arc::new(Index::open(&config.index_dir)?);
 
     // Reconcile the listing index against the filesystem before serving.

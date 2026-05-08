@@ -36,10 +36,15 @@ impl Storage {
         })
     }
 
-    /// Returns object info and an open file handle. Caller uses the file for sendfile.
+    /// Returns object info and an open file handle. Caller uses the file for streaming.
+    ///
+    /// Opens the file first then fstats the fd — saves one path lookup vs stat-then-open,
+    /// and eliminates the TOCTOU window between the two separate syscalls.
     pub async fn open_object(&self, bucket: &str, key: &str) -> Result<(ObjectInfo, fs::File)> {
-        let info = self.head_object(bucket, key).await?;
-        let path = self.data_dir.join(bucket).join(key);
+        validate_bucket(bucket)?;
+        validate_key(key)?;
+        let bucket_path = self.data_dir.join(bucket);
+        let path = bucket_path.join(key);
         let file = fs::File::open(&path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 StorageError::NotFound {
@@ -50,6 +55,20 @@ impl Storage {
                 e.into()
             }
         })?;
+        let meta = file.metadata().await?;
+        let attrs = xattr::read_object(&path)?;
+        let access = match attrs.access {
+            Some(a) => a,
+            None => xattr::read_access(&bucket_path)?.unwrap_or_default(),
+        };
+        let info = ObjectInfo {
+            size: meta.len(),
+            etag: attrs.etag,
+            last_modified: meta.modified()?,
+            content_type: attrs.content_type,
+            access,
+            user_metadata: attrs.user_metadata,
+        };
         Ok((info, file))
     }
 

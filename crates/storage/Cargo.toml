@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+futures.workspace = true
+hex.workspace = true
 md-5.workspace = true
 serde.workspace = true
 serde_json.workspace = true
