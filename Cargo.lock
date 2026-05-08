@@ -712,6 +712,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "hex",
+ "libc",
  "md-5 0.10.6",
  "serde",
  "serde_json",

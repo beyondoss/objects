@@ -1,3 +1,5 @@
+use std::os::unix::io::AsRawFd;
+
 use tokio::fs;
 use uuid::Uuid;
 
@@ -24,7 +26,7 @@ impl Storage {
         let attrs = xattr::read_object(&path)?;
         let access = match attrs.access {
             Some(a) => a,
-            None => xattr::read_access(&bucket_path)?.unwrap_or_default(),
+            None => self.cached_bucket_access(bucket, &bucket_path)?,
         };
         Ok(ObjectInfo {
             size: meta.len(),
@@ -39,7 +41,8 @@ impl Storage {
     /// Returns object info and an open file handle. Caller uses the file for streaming.
     ///
     /// Opens the file first then fstats the fd — saves one path lookup vs stat-then-open,
-    /// and eliminates the TOCTOU window between the two separate syscalls.
+    /// and eliminates the TOCTOU window between the two separate syscalls. Xattr reads
+    /// use the open fd directly (`fgetxattr`) to avoid re-resolving the path in the VFS.
     pub async fn open_object(&self, bucket: &str, key: &str) -> Result<(ObjectInfo, fs::File)> {
         validate_bucket(bucket)?;
         validate_key(key)?;
@@ -56,10 +59,10 @@ impl Storage {
             }
         })?;
         let meta = file.metadata().await?;
-        let attrs = xattr::read_object(&path)?;
+        let attrs = xattr::read_object_fd(file.as_raw_fd())?;
         let access = match attrs.access {
             Some(a) => a,
-            None => xattr::read_access(&bucket_path)?.unwrap_or_default(),
+            None => self.cached_bucket_access(bucket, &bucket_path)?,
         };
         let info = ObjectInfo {
             size: meta.len(),

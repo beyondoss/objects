@@ -9,7 +9,9 @@ pub(crate) mod sync;
 pub(crate) mod write;
 mod xattr;
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 pub use error::StorageError;
@@ -27,6 +29,9 @@ pub struct Storage {
     pub(crate) data_dir: PathBuf,
     pub(crate) tmp_dir: PathBuf,
     pub(crate) sync: SyncGroup,
+    /// In-memory cache of bucket access levels. Eliminates a `getxattr` on the
+    /// bucket directory for every object GET whose access inherits from the bucket.
+    pub(crate) bucket_access: Arc<RwLock<HashMap<String, AccessLevel>>>,
 }
 
 impl Storage {
@@ -37,6 +42,7 @@ impl Storage {
             data_dir,
             tmp_dir,
             sync: SyncGroup::inline(),
+            bucket_access: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -51,6 +57,26 @@ impl Storage {
             data_dir,
             tmp_dir,
             sync: SyncGroup::start(linger),
+            bucket_access: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Resolve bucket access level: cache-first, falling back to a filesystem
+    /// `getxattr` on a miss. Populates the cache on the slow path.
+    pub(crate) fn cached_bucket_access(
+        &self,
+        bucket: &str,
+        bucket_path: &Path,
+    ) -> Result<AccessLevel> {
+        if let Ok(cache) = self.bucket_access.read() {
+            if let Some(&access) = cache.get(bucket) {
+                return Ok(access);
+            }
+        }
+        let access = xattr::read_access(bucket_path)?.unwrap_or_default();
+        if let Ok(mut cache) = self.bucket_access.write() {
+            cache.insert(bucket.to_owned(), access);
+        }
+        Ok(access)
     }
 }

@@ -14,7 +14,11 @@ impl Storage {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
-        xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())
+        xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())?;
+        if let Ok(mut cache) = self.bucket_access.write() {
+            cache.insert(name.to_owned(), access);
+        }
+        Ok(())
     }
 
     /// Delete a bucket. Idempotent: succeeds silently if the bucket is already gone.
@@ -23,7 +27,12 @@ impl Storage {
         validate_bucket(name)?;
         let path = self.data_dir.join(name);
         match fs::remove_dir(&path).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Ok(mut cache) = self.bucket_access.write() {
+                    cache.remove(name);
+                }
+                Ok(())
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             // POSIX: ENOTEMPTY maps to ErrorKind::DirectoryNotEmpty (stable since 1.82)
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
@@ -93,7 +102,11 @@ impl Storage {
         if !path.try_exists()? {
             return Err(StorageError::BucketNotFound(name.into()));
         }
-        xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())
+        xattr::set(&path, xattr::ACCESS, access.as_str().as_bytes())?;
+        if let Ok(mut cache) = self.bucket_access.write() {
+            cache.insert(name.to_owned(), access);
+        }
+        Ok(())
     }
 }
 
