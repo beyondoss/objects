@@ -3,8 +3,16 @@
   "version": "0.1.0-dev",
   "description": "S3-compatible object storage SDK for the Beyond platform.",
   "type": "module",
-  "engines": { "node": ">=18" },
-  "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/beyondoss/objects.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.mjs",

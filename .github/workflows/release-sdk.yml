@@ -1,4 +1,7 @@
 name: Release SDK
+permissions:
+  id-token: write # Required for OIDC
+  contents: read
 on:
   push:
     tags:
