@@ -4,6 +4,7 @@ pub mod error;
 pub mod metrics;
 pub mod middleware;
 pub mod routes;
+pub mod s3;
 pub mod telemetry;
 pub mod test_support;
 
@@ -67,6 +68,79 @@ impl AppState {
     /// now — kept on AppState so handlers don't need to know whether events are
     /// wired up.
     pub fn publish(&self, _base_url: &str, _bucket: &str, _key: &str) {}
+
+    /// One page of a prefix-paginated listing. Used by both the native REST
+    /// handler and the S3 `ListObjectsV2` handler so they share a single
+    /// scan plus buffered-head implementation. Index entries whose backing
+    /// file disappeared (typically after a crash) are skipped silently;
+    /// startup reconcile drops them on the next boot.
+    pub async fn list_page(
+        &self,
+        bucket: &str,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<ListPage, error::ApiError> {
+        use beyond_objects_storage::StorageError;
+        use futures::TryStreamExt;
+        use futures::stream::StreamExt;
+
+        let index = self.index.clone();
+        let bucket_owned = bucket.to_owned();
+        let prefix_owned = prefix.to_owned();
+        let cursor_owned = cursor.map(str::to_owned);
+        let keys = tokio::task::spawn_blocking(move || {
+            index.scan(&bucket_owned, &prefix_owned, cursor_owned.as_deref(), limit)
+        })
+        .await
+        .map_err(|e| error::ApiError::Internal(anyhow::anyhow!("index scan join: {e}")))??;
+
+        let next_cursor = if keys.len() == limit {
+            keys.last().cloned()
+        } else {
+            None
+        };
+
+        let bucket_owned = bucket.to_owned();
+        let items: Vec<ListItem> = futures::stream::iter(keys.into_iter().map(|k| {
+            let storage = self.storage.clone();
+            let b = bucket_owned.clone();
+            async move {
+                match storage.head_object(&b, &k).await {
+                    Ok(info) => Ok(Some(ListItem { key: k, info })),
+                    Err(StorageError::NotFound { .. }) => {
+                        tracing::debug!(
+                            bucket = %b,
+                            key = %k,
+                            "skipping index entry without backing file"
+                        );
+                        Ok::<Option<ListItem>, error::ApiError>(None)
+                    }
+                    Err(e) => Err(error::ApiError::from(e)),
+                }
+            }
+        }))
+        .buffered(64)
+        .try_collect::<Vec<_>>()
+        .await?
+        .into_iter()
+        .flatten()
+        .collect();
+
+        Ok(ListPage { items, next_cursor })
+    }
+}
+
+/// One key+metadata pair returned by `AppState::list_page`. Surface layers
+/// (REST, S3) wrap this into their own response shapes.
+pub struct ListItem {
+    pub key: String,
+    pub info: beyond_objects_storage::ObjectInfo,
+}
+
+pub struct ListPage {
+    pub items: Vec<ListItem>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Clone)]
@@ -83,8 +157,14 @@ impl MakeRequestId for MakeRequestUuid {
 /// sit outside the auth boundary; per-resource auth is applied inside
 /// `routes::router`. The `/metrics` endpoint lives on a separate internal-only
 /// listener built via `build_metrics_router`.
+///
+/// The S3-compatible surface is mounted as `fallback_service` so that explicit
+/// `/v1/*`, `/healthz`, and `/v1/openapi.json` routes always win. Any
+/// unmatched URL (e.g. `GET /` for `ListBuckets`, `PUT /{bucket}/{key}` for
+/// `PutObject`) is handed to s3s.
 pub fn build_router(state: AppState) -> Router {
     let openapi = routes::ApiDoc::openapi();
+    let s3_fallback = s3::service(state.clone());
 
     routes::router(state.clone())
         .route(
@@ -96,8 +176,13 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/healthz", get(routes::healthz::handler))
         .with_state(state.clone())
+        .fallback_service(
+            ServiceBuilder::new()
+                .layer(DefaultBodyLimit::disable())
+                .service(s3_fallback),
+        )
         .route_layer(from_fn_with_state(state, record_metrics))
-        .layer(DefaultBodyLimit::max(64 * 1024))
+        .route_layer(DefaultBodyLimit::max(64 * 1024))
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
@@ -197,7 +282,7 @@ pub async fn serve(config: Config) -> Result<()> {
         config: Arc::new(config),
         storage,
         index,
-        metrics: Arc::new(metrics::Metrics::new()),
+        metrics: Arc::new(metrics::Metrics::try_new()?),
     };
 
     let app = build_router(state.clone());
@@ -221,17 +306,23 @@ async fn shutdown_signal() {
     use tokio::signal;
 
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        if let Err(e) = signal::ctrl_c().await {
+            tracing::warn!(err = %e, "Ctrl+C handler unavailable; relying on SIGTERM");
+            std::future::pending::<()>().await;
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, "SIGTERM handler unavailable; relying on Ctrl+C");
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]

@@ -1,6 +1,10 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createObjectsClient, deriveToken } from "../src/index.js";
+import {
+  createObjectsClient,
+  deriveS3Credentials,
+  deriveToken,
+} from "../src/index.js";
 import {
   ensureBucket,
   getRootToken,
@@ -108,5 +112,22 @@ describe("deriveToken", () => {
     const c = createObjectsClient({ url: getTestUrl(), token, bucket });
     const r = await c.list();
     expect(r.error).toBeUndefined();
+  });
+});
+
+describe("deriveS3Credentials", () => {
+  it("returns root creds when bucket is `root`", async () => {
+    const creds = await deriveS3Credentials("supersecret", "root");
+    expect(creds.accessKeyId).toBe("root");
+    expect(creds.secretAccessKey).toBe("supersecret");
+  });
+
+  it("returns scoped creds matching deriveToken for any other bucket", async () => {
+    const root = "root-token-xyz";
+    const bucket = "images";
+    const expected = await deriveToken(root, bucket);
+    const creds = await deriveS3Credentials(root, bucket);
+    expect(creds.accessKeyId).toBe(bucket);
+    expect(creds.secretAccessKey).toBe(expected);
   });
 });

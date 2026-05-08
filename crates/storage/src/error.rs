@@ -22,6 +22,12 @@ pub enum StorageError {
     #[error("invalid value: {0}")]
     InvalidValue(String),
 
+    #[error("multipart upload not found: {0}")]
+    UploadNotFound(String),
+
+    #[error("invalid part: {0}")]
+    InvalidPart(String),
+
     #[error("xattr: {0}")]
     Xattr(String),
 

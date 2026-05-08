@@ -7,14 +7,13 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
 
         let http_requests_total = CounterVec::new(
             Opts::new("http_requests_total", "Total HTTP requests"),
             &["method", "path", "status"],
-        )
-        .expect("valid metric");
+        )?;
 
         let http_request_duration_seconds = HistogramVec::new(
             histogram_opts!(
@@ -23,21 +22,16 @@ impl Metrics {
                 vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
             ),
             &["method", "path"],
-        )
-        .expect("valid metric");
+        )?;
 
-        registry
-            .register(Box::new(http_requests_total.clone()))
-            .expect("unique metric");
-        registry
-            .register(Box::new(http_request_duration_seconds.clone()))
-            .expect("unique metric");
+        registry.register(Box::new(http_requests_total.clone()))?;
+        registry.register(Box::new(http_request_duration_seconds.clone()))?;
 
-        Self {
+        Ok(Self {
             http_requests_total,
             http_request_duration_seconds,
             registry,
-        }
+        })
     }
 
     pub fn render(&self) -> Result<String, prometheus::Error> {

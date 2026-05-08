@@ -31,8 +31,6 @@ pub fn server() -> &'static TestServer {
                     otlp_endpoint: "http://localhost:4317".into(),
                     public_url: None,
                 };
-                // Leak the tempdir so the test server's storage outlives this scope.
-                let _ = Box::leak(Box::new(dir));
                 let server = beyond_objects::test_support::start(config)
                     .await
                     .expect("test server start");

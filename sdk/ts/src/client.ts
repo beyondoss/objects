@@ -144,11 +144,7 @@ export interface HeadResult {
 
 export interface ObjectsClient {
   /** Stream-upload an object. Honors `If-None-Match: "*"` and `If-Match: <etag>`. */
-  put(
-    key: string,
-    body: PutBody,
-    opts?: PutOptions,
-  ): ObjectsResult<PutResult>;
+  put(key: string, body: PutBody, opts?: PutOptions): ObjectsResult<PutResult>;
   /**
    * Download an object as a byte stream. With `opts.range` set the response
    * is a 206 Partial Content; the `Content-Range` header is on `response.headers`.
@@ -196,9 +192,7 @@ function toObjectsError(raw: unknown, response: Response): ObjectsError {
   const inner = raw != null && typeof raw === "object" && "error" in raw
     ? (raw as { error: { code?: string; message?: string; hint?: string } })
       .error
-    : (raw as
-      | { code?: string; message?: string; hint?: string }
-      | undefined);
+    : (raw as { code?: string; message?: string; hint?: string } | undefined);
   const code = inner?.code ?? "internal_error";
   const message = inner?.message ?? "Unknown error";
   const hint = inner?.hint ?? undefined;
@@ -209,7 +203,11 @@ function wrap<T>(
   promise: Promise<{ data?: T; error?: unknown; response: Response }>,
 ): ObjectsResult<Camelize<T>> {
   return promise.then(
-    ({ data, error, response }):
+    ({
+      data,
+      error,
+      response,
+    }):
       | { data: Camelize<T>; error: undefined; response: Response }
       | { data: undefined; error: ObjectsError; response: Response } =>
       error !== undefined
@@ -349,65 +347,62 @@ export function createObjectsClient(
 
   // ── Object operations (raw fetch for binary / streaming bodies) ────────────
 
-  const put: ObjectsClient["put"] = cmd(
-    "put",
-    async (key, body, putOpts) => {
-      const headers: Record<string, string> = {
-        Authorization: authHeader,
-        "Content-Type": putOpts?.contentType ?? "application/octet-stream",
-      };
-      if (putOpts?.ifNoneMatch != null) {
-        headers["If-None-Match"] = putOpts.ifNoneMatch;
+  const put: ObjectsClient["put"] = cmd("put", async (key, body, putOpts) => {
+    const headers: Record<string, string> = {
+      Authorization: authHeader,
+      "Content-Type": putOpts?.contentType ?? "application/octet-stream",
+    };
+    if (putOpts?.ifNoneMatch != null) {
+      headers["If-None-Match"] = putOpts.ifNoneMatch;
+    }
+    if (putOpts?.ifMatch != null) headers["If-Match"] = putOpts.ifMatch;
+    if (putOpts?.access != null) headers["X-Beyond-Access"] = putOpts.access;
+    if (putOpts?.metadata != null) {
+      for (const [k, v] of Object.entries(putOpts.metadata)) {
+        headers[`${META_PREFIX}${k.toLowerCase()}`] = v;
       }
-      if (putOpts?.ifMatch != null) headers["If-Match"] = putOpts.ifMatch;
-      if (putOpts?.access != null) headers["X-Beyond-Access"] = putOpts.access;
-      if (putOpts?.metadata != null) {
-        for (const [k, v] of Object.entries(putOpts.metadata)) {
-          headers[`${META_PREFIX}${k.toLowerCase()}`] = v;
-        }
-      }
+    }
 
-      const init: RequestInit = {
-        method: "PUT",
-        headers,
-        // BodyInit narrows ArrayBuffer to exclude SharedArrayBuffer; Uint8Array
-        // backed by ArrayBufferLike is rejected by lib.dom even though fetch
-        // accepts it at runtime in every supported runtime.
-        body: body as BodyInit,
-      };
-      if (body instanceof ReadableStream) {
-        // Node fetch requires `duplex: "half"` for streaming request bodies.
-        (init as RequestInit & { duplex: "half" }).duplex = "half";
-      }
+    const init: RequestInit = {
+      method: "PUT",
+      headers,
+      // BodyInit narrows ArrayBuffer to exclude SharedArrayBuffer; Uint8Array
+      // backed by ArrayBufferLike is rejected by lib.dom even though fetch
+      // accepts it at runtime in every supported runtime.
+      body: body as BodyInit,
+    };
+    if (body instanceof ReadableStream) {
+      // Node fetch requires `duplex: "half"` for streaming request bodies.
+      (init as RequestInit & { duplex: "half" }).duplex = "half";
+    }
 
-      const response = await fetchFn(objectUrl(key), init);
-      if (!response.ok) {
-        let parsed: unknown;
-        try {
-          parsed = await response.json();
-        } catch {
-          /* fall through with empty body */
-        }
-        return {
-          data: undefined,
-          error: toObjectsError(parsed, response),
-          response,
-        };
+    const response = await fetchFn(objectUrl(key), init);
+    if (!response.ok) {
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        /* fall through with empty body */
       }
-      const raw =
-        (await response.json()) as components["schemas"]["PutObjectResponse"];
       return {
-        data: {
-          key: raw.key,
-          etag: raw.etag,
-          size: raw.size,
-          url: objectUrl(raw.key),
-        },
-        error: undefined,
+        data: undefined,
+        error: toObjectsError(parsed, response),
         response,
       };
-    },
-  );
+    }
+    const raw =
+      (await response.json()) as components["schemas"]["PutObjectResponse"];
+    return {
+      data: {
+        key: raw.key,
+        etag: raw.etag,
+        size: raw.size,
+        url: objectUrl(raw.key),
+      },
+      error: undefined,
+      response,
+    };
+  });
 
   const get: ObjectsClient["get"] = cmd("get", async (key, getOpts) => {
     const reqHeaders: Record<string, string> = { Authorization: authHeader };
@@ -505,10 +500,10 @@ export function createObjectsClient(
     key: string,
     body: components["schemas"]["PatchObjectRequest"],
   ): ReturnType<ObjectsClient["move"]> {
-    const { data, error, response } = await client.PATCH(
-      "/v1/{bucket}/{key}",
-      { params: { path: { bucket, key } }, body },
-    );
+    const { data, error, response } = await client.PATCH("/v1/{bucket}/{key}", {
+      params: { path: { bucket, key } },
+      body,
+    });
     if (error) {
       return {
         data: undefined,
@@ -614,10 +609,11 @@ export function createObjectsClient(
       };
     }),
 
-    get: cmd("buckets.get", (name) =>
-      wrap(
-        client.GET("/v1/buckets/{name}", { params: { path: { name } } }),
-      )),
+    get: cmd(
+      "buckets.get",
+      (name) =>
+        wrap(client.GET("/v1/buckets/{name}", { params: { path: { name } } })),
+    ),
 
     update: cmd("buckets.update", (name, bOpts) =>
       wrap(
@@ -682,4 +678,46 @@ export async function deriveToken(
   return [...new Uint8Array(sig)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * AWS-style credentials for the S3-compatible surface. Pass these to any
+ * `aws-sdk-*` / S3 client alongside the service URL and `forcePathStyle:
+ * true`.
+ *
+ * The mapping is the inverse of `deriveToken`: the access key id is the
+ * bucket name (or the literal `"root"` for the root scope), and the secret
+ * is the same string a REST client puts in `Authorization: Bearer …`.
+ */
+export interface S3Credentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+/**
+ * Derive AWS-style S3 credentials. `bucket = "root"` returns the root
+ * credentials; any other bucket name returns scoped credentials.
+ *
+ * @example
+ * ```ts
+ * const creds = await deriveS3Credentials(process.env.OBJECTS_ROOT_TOKEN, "images");
+ * const s3 = new S3Client({
+ *   endpoint: process.env.OBJECTS_URL,
+ *   forcePathStyle: true,
+ *   credentials: creds,
+ *   region: "us-east-1",
+ * });
+ * ```
+ */
+export async function createS3Credentials(
+  rootToken: string,
+  bucket: string,
+): Promise<S3Credentials> {
+  if (bucket === "root") {
+    return { accessKeyId: "root", secretAccessKey: rootToken };
+  }
+  return {
+    accessKeyId: bucket,
+    secretAccessKey: await deriveToken(rootToken, bucket),
+  };
 }

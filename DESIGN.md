@@ -24,9 +24,26 @@ Clean JSON API, Beyond bearer-token auth, no XML, no Sig V4. This is what the Ty
 
 ### S3-compatible
 
-Full S3 wire protocol via [`s3s`](https://github.com/s3s-project/s3s) — a hyper middleware that handles S3 routing, request parsing, multipart lifecycle, and error serialization. We implement one `S3` trait backed by the filesystem.
+Full S3 wire protocol via [`s3s`](https://github.com/Nugine/s3s) — a tower service that handles S3 routing, request parsing, multipart lifecycle, and error serialization. We implement one `S3` trait backed by the same filesystem.
 
 S3 "buckets" map directly to Beyond buckets on the filesystem. `CreateBucket` is a `mkdir` + xattr init. `ListBuckets` reads top-level directories.
+
+**Auth — SigV4 mapped to our HMAC scheme.** AWS SDKs always sign with `(access_key_id, secret_access_key)`. We answer s3s's "what's the secret for this access_key?" question by reusing the existing token derivation:
+
+| access_key_id | secret_access_key                                 |
+| ------------- | ------------------------------------------------- |
+| `"root"`      | `OBJECTS_ROOT_TOKEN`                              |
+| `<bucket>`    | `HMAC-SHA256(OBJECTS_ROOT_TOKEN, <bucket>)` (hex) |
+
+So an S3 client using `accessKeyId: "images"` and `secretAccessKey: <hex>` is byte-for-byte equivalent to a REST client sending `Authorization: Bearer <hex>`. Authorization (which buckets a key may touch) is enforced by `S3Access`: `access_key == bucket || access_key == "root"`. The TS SDK exports `deriveS3Credentials(rootToken, bucket)` for symmetry with `deriveToken`.
+
+**Path-style only.** `https://{endpoint}/{bucket}/{key…}`. Virtual-hosted-style is not supported (it would require a wildcard cert per project, and AWS clients support `forcePathStyle: true`).
+
+**Anonymous reads.** Public objects can be GET/HEAD'd without credentials, mirroring the REST surface. Anonymous writes are denied at `S3Access`.
+
+**What we support:** `ListBuckets`, `CreateBucket`, `DeleteBucket`, `HeadBucket`; `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`, `CopyObject`, `ListObjectsV2`; the full multipart five (`CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListMultipartUploads`, `ListParts`). Within those: `Range`, `If-Match`, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `Content-Type`, `x-amz-meta-*`, and `x-amz-acl: public-read | private` (mapped to the same `user.access` xattr the REST surface writes).
+
+**What returns `NotImplemented`:** versioning, lifecycle, replication, CORS-config-via-API, website config, object lock, retention, tagging, presigned URLs, bucket policies, inventory, intelligent-tiering, analytics, encryption configuration, full ACL grants beyond the canned `private` / `public-read`.
 
 ---
 
@@ -128,7 +145,24 @@ Supported via standard HTTP conditional headers on PUT:
 
 ### Multipart uploads (S3-compat only)
 
-Multipart is not exposed in the native API — streaming handles large uploads directly. The S3-compatible layer supports it for clients that require it. Parts written to `.multipart/{upload_id}/{part_number}`; assembled on `CompleteMultipartUpload` via sequential concatenation → `fsync` → `rename()` → fjall INSERT.
+Multipart is not exposed in the native API — streaming handles large uploads directly. The S3-compatible layer supports it for clients that require it.
+
+**On-disk layout:**
+
+```
+{data_dir}/.multipart/{upload_id}/.meta.json   {bucket, key, content_type, access, user_metadata, init_time_secs}
+{data_dir}/.multipart/{upload_id}/{part_n}     raw part bytes; quoted-MD5 etag in `user.etag` xattr
+```
+
+`CompleteMultipartUpload`: read the meta sidecar → concatenate parts in caller-supplied order to `.tmp/{uuid}` while computing `MD5({part_md5}|{part_md5}|…)` → fsync → set xattrs from meta → atomic `rename()` to `{bucket}/{key}` → fjall INSERT → `rm -rf .multipart/{upload_id}`. Final etag is `"{md5_of_part_md5s}-{N}"` (AWS convention). `AbortMultipartUpload` is `rm -rf .multipart/{upload_id}` (idempotent).
+
+**Crash recovery:**
+
+- Crash mid-`UploadPart` → tmp file in `.tmp/`, GC'd by `gc_temp_files`.
+- Crash after `complete` rename, before `.multipart/{id}` cleanup → orphan dir, GC'd by `gc_multipart_uploads`.
+- Crash before rename → object never appears; abort or GC sweeps it.
+
+The `.multipart/` directory is dot-prefixed so `list_buckets` skips it automatically.
 
 ---
 
@@ -146,6 +180,14 @@ const objects = createObjectsClient();
 // derive a scoped token to hand off to a specific service (HMAC-SHA256, async)
 const imagesToken = await deriveToken(process.env.OBJECTS_ROOT_TOKEN, "images");
 const images = createObjectsClient({ bucket: "images", token: imagesToken });
+
+// the same secret, formatted for any AWS S3 SDK
+import { deriveS3Credentials } from "@beyond.dev/objects";
+const creds = await deriveS3Credentials(
+  process.env.OBJECTS_ROOT_TOKEN,
+  "images",
+);
+// { accessKeyId: "images", secretAccessKey: <hex> }
 ```
 
 **Per-object visibility**, set at write time, inherited from bucket default if absent:

@@ -17,6 +17,7 @@ beyond-objects-index = { path = "../index" }
 beyond-objects-storage = { path = "../storage" }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
@@ -29,6 +30,7 @@ opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 prometheus = { workspace = true }
+s3s = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -49,9 +51,18 @@ uuid = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
+aws-smithy-async = { version = "1", features = ["rt-tokio"] }
+aws-smithy-runtime = { version = "1", features = ["client", "connector-hyper-0-14-x", "rt-tokio"] }
+aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 
 [[test]]
 name = "rest"
 path = "tests/rest/main.rs"
+
+[[test]]
+name = "s3"
+path = "tests/s3/main.rs"

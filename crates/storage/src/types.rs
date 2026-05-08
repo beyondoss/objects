@@ -64,3 +64,30 @@ pub enum WriteCondition {
     /// `If-Match: "<etag>"` — current etag must match. Returns `EtagMismatch` if not.
     IfMatch(String),
 }
+
+/// In-progress multipart upload.
+#[derive(Debug)]
+pub struct MultipartInfo {
+    pub upload_id: String,
+    pub bucket: String,
+    pub key: String,
+    pub init_time: std::time::SystemTime,
+}
+
+/// One uploaded part of an in-progress multipart upload.
+#[derive(Debug, Clone)]
+pub struct PartInfo {
+    pub number: u32,
+    /// Quoted hex MD5 of the part bytes (matches AWS's per-part ETag form).
+    pub etag: String,
+    pub size: u64,
+    pub last_modified: std::time::SystemTime,
+}
+
+/// One completed-part assertion supplied to `complete_multipart`.
+#[derive(Debug, Clone)]
+pub struct CompletedPart {
+    pub number: u32,
+    /// Quoted hex MD5 the client received from `write_part` and is asserting.
+    pub etag: String,
+}

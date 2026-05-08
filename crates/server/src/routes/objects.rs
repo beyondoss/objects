@@ -9,7 +9,6 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use futures::TryStreamExt;
-use futures::stream::StreamExt;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -315,7 +314,9 @@ pub async fn delete_object(
         Ok(()) => state.index_delete(&bucket, &key).await?,
         Err(StorageError::NotFound { .. }) => {
             // Already gone — idempotent. Best-effort index cleanup; reconcile handles gaps.
-            let _ = state.index_delete(&bucket, &key).await;
+            if let Err(e) = state.index_delete(&bucket, &key).await {
+                tracing::warn!(bucket, key, err = %e, "best-effort index cleanup failed for already-deleted object");
+            }
         }
         Err(e) => return Err(e.into()),
     }
@@ -448,61 +449,28 @@ pub async fn list_objects(
         .unwrap_or(DEFAULT_LIST_LIMIT)
         .min(MAX_LIST_LIMIT);
 
-    let index = state.index.clone();
-    let bucket_for_scan = bucket.clone();
-    let prefix_for_scan = prefix.clone();
-    let cursor_for_scan = query.cursor.clone();
-    let keys = tokio::task::spawn_blocking(move || {
-        index.scan(
-            &bucket_for_scan,
-            &prefix_for_scan,
-            cursor_for_scan.as_deref(),
-            limit,
-        )
-    })
-    .await
-    .map_err(|e| ApiError::Internal(anyhow::anyhow!("index scan join: {e}")))??;
-
-    let next_cursor = if keys.len() == limit {
-        keys.last().cloned()
-    } else {
-        None
-    };
+    let page = state
+        .list_page(&bucket, &prefix, query.cursor.as_deref(), limit)
+        .await?;
 
     let base = state.config.base_url();
-    let objects: Vec<ObjectItem> = futures::stream::iter(keys.into_iter().map(|k| {
-        let st = state.clone();
-        let b = bucket.clone();
-        let base = base.clone();
-        async move {
-            match st.storage.head_object(&b, &k).await {
-                Ok(info) => Ok(Some(ObjectItem {
-                    url: format!("{base}/v1/{b}/{k}"),
-                    key: k,
-                    size: info.size,
-                    etag: info.etag,
-                    content_type: info.content_type,
-                    access: info.access,
-                    last_modified: DateTime::<Utc>::from(info.last_modified),
-                })),
-                Err(StorageError::NotFound { .. }) => {
-                    tracing::debug!(bucket = %b, key = %k, "skipping index entry without backing file");
-                    Ok::<Option<ObjectItem>, ApiError>(None)
-                }
-                Err(e) => Err(ApiError::from(e)),
-            }
-        }
-    }))
-    .buffered(64)
-    .try_collect::<Vec<_>>()
-    .await?
-    .into_iter()
-    .flatten()
-    .collect();
+    let objects = page
+        .items
+        .into_iter()
+        .map(|item| ObjectItem {
+            url: format!("{base}/v1/{bucket}/{key}", key = item.key),
+            key: item.key,
+            size: item.info.size,
+            etag: item.info.etag,
+            content_type: item.info.content_type,
+            access: item.info.access,
+            last_modified: DateTime::<Utc>::from(item.info.last_modified),
+        })
+        .collect();
 
     Ok(Json(ListObjectsResponse {
         objects,
-        next_cursor,
+        next_cursor: page.next_cursor,
     }))
 }
 

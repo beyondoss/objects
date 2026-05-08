@@ -3,6 +3,7 @@ pub mod types;
 
 mod bucket;
 mod gc;
+mod multipart;
 mod read;
 pub(crate) mod write;
 mod xattr;
@@ -10,7 +11,10 @@ mod xattr;
 use std::path::PathBuf;
 
 pub use error::StorageError;
-pub use types::{AccessLevel, BucketMeta, ObjectInfo, ObjectMeta, WriteCondition};
+pub use types::{
+    AccessLevel, BucketMeta, CompletedPart, MultipartInfo, ObjectInfo, ObjectMeta, PartInfo,
+    WriteCondition,
+};
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 

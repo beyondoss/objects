@@ -49,7 +49,7 @@ pub async fn start(config: Config) -> Result<TestServer> {
         config: Arc::new(config),
         storage,
         index,
-        metrics: Arc::new(Metrics::new()),
+        metrics: Arc::new(Metrics::try_new()?),
     };
     let app = build_router(state.clone());
     let metrics_app = crate::build_metrics_router(state);

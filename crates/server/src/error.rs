@@ -71,6 +71,12 @@ pub enum ApiError {
     #[error("range not satisfiable")]
     RangeNotSatisfiable,
 
+    #[error("multipart upload not found: {0}")]
+    UploadNotFound(String),
+
+    #[error("invalid part: {0}")]
+    InvalidPart(String),
+
     #[error("internal error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -91,6 +97,8 @@ impl From<StorageError> for ApiError {
             StorageError::EtagMismatch => Self::EtagMismatch,
             StorageError::InvalidKey(k) => Self::InvalidKey(k),
             StorageError::InvalidValue(v) => Self::BadRequest(v),
+            StorageError::UploadNotFound(id) => Self::UploadNotFound(id),
+            StorageError::InvalidPart(msg) => Self::InvalidPart(msg),
             StorageError::Xattr(msg) => Self::Internal(anyhow::anyhow!("xattr failure: {msg}")),
             StorageError::Io(e) => Self::Internal(anyhow::anyhow!("io: {e}")),
         }
@@ -134,6 +142,10 @@ impl IntoResponse for ApiError {
                 "range_not_satisfiable",
                 self.to_string(),
             ),
+            ApiError::UploadNotFound(_) => {
+                (StatusCode::NOT_FOUND, "upload_not_found", self.to_string())
+            }
+            ApiError::InvalidPart(_) => (StatusCode::BAD_REQUEST, "invalid_part", self.to_string()),
             ApiError::Internal(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",

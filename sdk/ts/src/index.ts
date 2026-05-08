@@ -6,6 +6,7 @@ export {
   type CopyResult,
   type CreateBucketOptions,
   createObjectsClient,
+  createS3Credentials as deriveS3Credentials,
   deriveToken,
   type GetOptions,
   type HeadResult,
@@ -21,6 +22,7 @@ export {
   type PutOptions,
   type PutResult,
   type Range,
+  type S3Credentials,
   type UpdateBucketOptions,
 } from "./client.js";
 export { ObjectsError } from "./errors.js";

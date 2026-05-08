@@ -53,7 +53,9 @@ impl Storage {
             .inspect_err(|_| {
                 let p = tmp_path.clone();
                 tokio::spawn(async move {
-                    let _ = fs::remove_file(p).await;
+                    if let Err(e) = fs::remove_file(&p).await {
+                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                    }
                 });
             })?;
 
@@ -67,7 +69,9 @@ impl Storage {
         .inspect_err(|_| {
             let p = tmp_path.clone();
             tokio::spawn(async move {
-                let _ = fs::remove_file(p).await;
+                if let Err(e) = fs::remove_file(&p).await {
+                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                }
             });
         })?;
 
@@ -80,7 +84,9 @@ impl Storage {
                 // on Linux, which makes the check-and-rename atomic at the syscall level.
                 // TODO: upgrade to renameat2(RENAME_NOREPLACE) on Linux for atomic CAS semantics.
                 if final_path.try_exists()? {
-                    let _ = fs::remove_file(&tmp_path).await;
+                    if let Err(e) = fs::remove_file(&tmp_path).await {
+                        tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
+                    }
                     return Err(StorageError::ObjectExists {
                         bucket: bucket.into(),
                         key: key.into(),
@@ -90,14 +96,18 @@ impl Storage {
             Some(WriteCondition::IfMatch(expected)) => {
                 match xattr::get(&final_path, xattr::ETAG)? {
                     None => {
-                        let _ = fs::remove_file(&tmp_path).await;
+                        if let Err(e) = fs::remove_file(&tmp_path).await {
+                            tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
+                        }
                         return Err(StorageError::NotFound {
                             bucket: bucket.into(),
                             key: key.into(),
                         });
                     }
                     Some(actual) if actual.as_slice() != expected.as_bytes() => {
-                        let _ = fs::remove_file(&tmp_path).await;
+                        if let Err(e) = fs::remove_file(&tmp_path).await {
+                            tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
+                        }
                         return Err(StorageError::EtagMismatch);
                     }
                     _ => {}
@@ -119,7 +129,7 @@ impl Storage {
     }
 }
 
-async fn stream_to_tmp(
+pub(crate) async fn stream_to_tmp(
     tmp_path: &std::path::Path,
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
 ) -> Result<(String, u64)> {

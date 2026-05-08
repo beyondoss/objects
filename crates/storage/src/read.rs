@@ -97,7 +97,9 @@ impl Storage {
         fs::copy(&src, &tmp_path).await.inspect_err(|_| {
             let p = tmp_path.clone();
             tokio::spawn(async move {
-                let _ = fs::remove_file(p).await;
+                if let Err(e) = fs::remove_file(&p).await {
+                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                }
             });
         })?;
         let attrs = xattr::read_object(&src)?;
@@ -113,7 +115,9 @@ impl Storage {
         .inspect_err(|_| {
             let p = tmp_path.clone();
             tokio::spawn(async move {
-                let _ = fs::remove_file(p).await;
+                if let Err(e) = fs::remove_file(&p).await {
+                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
+                }
             });
         })?;
         if let Some(p) = dst.parent() {
