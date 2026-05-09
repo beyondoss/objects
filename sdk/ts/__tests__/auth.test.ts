@@ -61,16 +61,16 @@ describe("auth — construction errors", () => {
   let savedToken: string | undefined;
 
   beforeEach(() => {
-    savedUrl = process.env["OBJECTS_URL"];
-    savedToken = process.env["OBJECTS_ROOT_TOKEN"];
-    delete process.env["OBJECTS_URL"];
-    delete process.env["OBJECTS_ROOT_TOKEN"];
+    savedUrl = process.env["BEYOND_OBJECTS_URL"];
+    savedToken = process.env["BEYOND_OBJECTS_ROOT_TOKEN"];
+    delete process.env["BEYOND_OBJECTS_URL"];
+    delete process.env["BEYOND_OBJECTS_ROOT_TOKEN"];
   });
 
   afterEach(() => {
-    if (savedUrl !== undefined) process.env["OBJECTS_URL"] = savedUrl;
+    if (savedUrl !== undefined) process.env["BEYOND_OBJECTS_URL"] = savedUrl;
     if (savedToken !== undefined) {
-      process.env["OBJECTS_ROOT_TOKEN"] = savedToken;
+      process.env["BEYOND_OBJECTS_ROOT_TOKEN"] = savedToken;
     }
   });
 
@@ -81,7 +81,7 @@ describe("auth — construction errors", () => {
   });
 
   it("constructing without a url throws", () => {
-    expect(() => createObjectsClient({ token: "x" })).toThrow(/OBJECTS_URL/);
+    expect(() => createObjectsClient({ token: "x" })).toThrow(/BEYOND_OBJECTS_URL/);
   });
 });
 

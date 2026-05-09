@@ -27,7 +27,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "openapi-fetch": "^0.17.0"
+    "openapi-fetch": "^0.17.0",
+    "std-env": "^3.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

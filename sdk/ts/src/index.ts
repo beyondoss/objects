@@ -1,3 +1,19 @@
+import { createObjectsClient, type ObjectsClient } from "./client.js";
+
+let _objects: ObjectsClient | undefined;
+
+/**
+ * Default Objects client configured from environment variables.
+ * Reads `BEYOND_OBJECTS_URL` (required) and `BEYOND_OBJECTS_ROOT_TOKEN` (required).
+ * Initialized lazily on first method call.
+ */
+export const objects: ObjectsClient = new Proxy({} as ObjectsClient, {
+  get(_, prop) {
+    _objects ??= createObjectsClient();
+    return (_objects as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
+
 export {
   type Access,
   type Bucket,

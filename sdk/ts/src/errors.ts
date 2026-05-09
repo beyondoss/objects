@@ -19,7 +19,7 @@ export class ObjectsError extends Error {
    * `throw`n the error and lost the `{ response }` field of the result tuple.
    *
    * `undefined` only for errors thrown before a request was sent
-   * (e.g. missing `OBJECTS_URL`).
+   * (e.g. missing `BEYOND_OBJECTS_URL`).
    */
   readonly response: Response | undefined;
   readonly hint: string | undefined;

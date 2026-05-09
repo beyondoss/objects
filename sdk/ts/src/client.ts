@@ -1,4 +1,5 @@
 import createFetchClient from "openapi-fetch";
+import { env } from "std-env";
 import { ObjectsError } from "./errors.js";
 import type { components, paths } from "./types.js";
 import { type Camelize, camelize } from "./utils/camelize.js";
@@ -81,12 +82,12 @@ export interface ObjectsResponseEvent {
 }
 
 export interface ObjectsClientOptions {
-  /** Base URL of the beyond-objects server. Defaults to `process.env.OBJECTS_URL`. */
+  /** Base URL of the beyond-objects server. Defaults to the `BEYOND_OBJECTS_URL` env var. */
   url?: string;
   /**
    * Bearer token. Use the root token for the default bucket and bucket admin,
    * or `deriveToken(rootToken, bucketName)` for a scoped token.
-   * Defaults to `process.env.OBJECTS_ROOT_TOKEN`.
+   * Defaults to the `BEYOND_OBJECTS_ROOT_TOKEN` env var.
    */
   token?: string;
   /** Bucket this client operates against. Default `"default"`. */
@@ -282,32 +283,25 @@ function readMetadata(headers: Headers): Record<string, string> {
   return out;
 }
 
-function readEnv(name: string): string | undefined {
-  const g = globalThis as {
-    process?: { env?: Record<string, string | undefined> };
-  };
-  return g.process?.env?.[name];
-}
-
 // ── Factory ─────────────────────────────────────────────────────────────────
 
 /** Create an Objects client scoped to a single bucket. */
 export function createObjectsClient(
   opts: ObjectsClientOptions = {},
 ): ObjectsClient {
-  const url = opts.url ?? readEnv("OBJECTS_URL");
+  const url = opts.url ?? env["BEYOND_OBJECTS_URL"];
   if (url == null || url === "") {
     throw new ObjectsError(
       "invalid_request",
-      "OBJECTS_URL is required (pass `url` or set the OBJECTS_URL env var)",
+      "BEYOND_OBJECTS_URL is required (pass `url` or set the BEYOND_OBJECTS_URL env var)",
       0,
     );
   }
-  const token = opts.token ?? readEnv("OBJECTS_ROOT_TOKEN");
+  const token = opts.token ?? env["BEYOND_OBJECTS_ROOT_TOKEN"];
   if (token == null || token === "") {
     throw new ObjectsError(
       "invalid_request",
-      "Bearer token is required (pass `token` or set the OBJECTS_ROOT_TOKEN env var)",
+      "Bearer token is required (pass `token` or set the BEYOND_OBJECTS_ROOT_TOKEN env var)",
       0,
     );
   }
@@ -658,7 +652,7 @@ export function createObjectsClient(
 /**
  * Derive a per-bucket bearer token from the root token.
  *
- * Server-side validation: `HMAC-SHA256(OBJECTS_ROOT_TOKEN, bucket_name)` in
+ * Server-side validation: `HMAC-SHA256(BEYOND_OBJECTS_ROOT_TOKEN, bucket_name)` in
  * lowercase hex. Implemented with Web Crypto so it works in Node, browsers,
  * and edge runtimes.
  */
@@ -700,9 +694,9 @@ export interface S3Credentials {
  *
  * @example
  * ```ts
- * const creds = await deriveS3Credentials(process.env.OBJECTS_ROOT_TOKEN, "images");
+ * const creds = await deriveS3Credentials(process.env.BEYOND_OBJECTS_ROOT_TOKEN, "images");
  * const s3 = new S3Client({
- *   endpoint: process.env.OBJECTS_URL,
+ *   endpoint: process.env.BEYOND_OBJECTS_URL,
  *   forcePathStyle: true,
  *   credentials: creds,
  *   region: "us-east-1",
