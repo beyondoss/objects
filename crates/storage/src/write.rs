@@ -161,6 +161,7 @@ impl Storage {
 ///
 /// The file is flushed but not synced — the caller is responsible for calling
 /// `sync_data()` (directly or via `SyncGroup`) before making the file visible.
+#[tracing::instrument(skip_all, fields(size_bytes = tracing::field::Empty))]
 pub(crate) async fn stream_to_tmp(
     tmp_path: &std::path::Path,
     reader: &mut (impl tokio::io::AsyncRead + Unpin),
@@ -182,6 +183,7 @@ pub(crate) async fn stream_to_tmp(
     buf_file.flush().await?;
     let file = buf_file.into_inner();
     let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
+    tracing::Span::current().record("size_bytes", total);
     Ok((etag, total, file))
 }
 

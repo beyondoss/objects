@@ -71,6 +71,7 @@ impl Index {
     /// **Precondition**: when `prefix` is non-empty, `cursor` must be a key returned by a
     /// prior `scan` call with the same `bucket` and `prefix`. Passing a cursor from a
     /// different prefix produces undefined results.
+    #[tracing::instrument(skip(self), fields(results = tracing::field::Empty))]
     pub fn scan(
         &self,
         bucket: &str,
@@ -111,6 +112,7 @@ impl Index {
                 Err(_) => tracing::warn!("skipping index entry with non-UTF-8 key"),
             }
         }
+        tracing::Span::current().record("results", results.len());
         Ok(results)
     }
 

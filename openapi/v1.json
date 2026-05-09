@@ -924,8 +924,8 @@
         "properties": {
           "etag": {
             "type": "string",
-            "description": "Etag of the destination object (identical to the source's etag).",
-            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+            "description": "Quoted MD5 hex digest of the destination object (identical to the source's etag).",
+            "example": "\"5d41402abc4b2a76b9719d911017c592\""
           },
           "key": {
             "type": "string",
@@ -1080,8 +1080,8 @@
           },
           "etag": {
             "type": "string",
-            "description": "Strong entity tag (quoted hex BLAKE3 of the object bytes).",
-            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+            "description": "Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).",
+            "example": "\"5d41402abc4b2a76b9719d911017c592\""
           },
           "key": {
             "type": "string",
@@ -1140,8 +1140,8 @@
         "properties": {
           "etag": {
             "type": "string",
-            "description": "Strong entity tag (quoted hex BLAKE3 of the object bytes).",
-            "example": "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\""
+            "description": "Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).",
+            "example": "\"5d41402abc4b2a76b9719d911017c592\""
           },
           "key": {
             "type": "string",

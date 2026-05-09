@@ -161,8 +161,8 @@ export interface components {
     /** @description Result of a successful server-side copy. */
     CopyObjectResponse: {
       /**
-       * @description Etag of the destination object (identical to the source's etag).
-       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       * @description Quoted MD5 hex digest of the destination object (identical to the source's etag).
+       * @example "5d41402abc4b2a76b9719d911017c592"
        */
       etag: string;
       /**
@@ -258,8 +258,8 @@ export interface components {
        */
       content_type?: string | null;
       /**
-       * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
-       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       * @description Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).
+       * @example "5d41402abc4b2a76b9719d911017c592"
        */
       etag: string;
       /**
@@ -301,8 +301,8 @@ export interface components {
     /** @description Result of a successful upload, move, or access change. */
     PutObjectResponse: {
       /**
-       * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
-       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       * @description Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).
+       * @example "5d41402abc4b2a76b9719d911017c592"
        */
       etag: string;
       /**

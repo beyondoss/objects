@@ -44,6 +44,7 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[tracing::instrument(skip(self))]
     pub async fn index_insert(&self, bucket: &str, key: &str) -> Result<(), error::ApiError> {
         let idx = self.index.clone();
         let bucket = bucket.to_owned();
@@ -54,6 +55,7 @@ impl AppState {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn index_delete(&self, bucket: &str, key: &str) -> Result<(), error::ApiError> {
         let idx = self.index.clone();
         let bucket = bucket.to_owned();
@@ -89,7 +91,9 @@ impl AppState {
         let bucket_owned = bucket.to_owned();
         let prefix_owned = prefix.to_owned();
         let cursor_owned = cursor.map(str::to_owned);
+        let parent_span = tracing::Span::current();
         let keys = tokio::task::spawn_blocking(move || {
+            let _enter = parent_span.enter();
             index.scan(&bucket_owned, &prefix_owned, cursor_owned.as_deref(), limit)
         })
         .await

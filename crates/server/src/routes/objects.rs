@@ -281,7 +281,9 @@ pub async fn get_object(
         Body::empty()
     } else {
         let file_std = file.into_std().await;
+        let mmap_span = tracing::info_span!("storage.mmap", offset = start, length = length);
         let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
+            let _enter = mmap_span.enter();
             // SAFETY: Objects are write-once-by-rename (no in-place mutation ever
             // occurs). `delete_object` and `move_object` use `unlink`/`rename`; on
             // Linux and macOS these never invalidate a live `Mmap` — the inode is
