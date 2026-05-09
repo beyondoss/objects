@@ -128,6 +128,18 @@ Tokens are never stored. Verification is a constant-time compare using the `subt
 
 Public objects (`user.access = "public"`) bypass auth on GET/HEAD entirely.
 
+### Sync Linger Batching
+
+On Linux (ext4/xfs), concurrent `fdatasync` calls on different files in the same filesystem share a journal commit and block device flush. The `SyncGroup` in `storage/sync.rs` exploits this: when `SYNC_LINGER_MS > 0`, a background task collects all upload `fdatasync` requests that arrive within the linger window and fires them all concurrently, letting the kernel merge the journal commits into one flush. Under concurrent upload load, N uploads become ~1 journal commit instead of N serial commits.
+
+```
+upload 1 ──fdatasync──► SyncGroup ──┐
+upload 2 ──fdatasync──► SyncGroup ──┼─ (linger window) ──► join_all(fdatasync) ──► 1 journal commit
+upload 3 ──fdatasync──► SyncGroup ──┘
+```
+
+`SYNC_LINGER_MS=0` disables batching — each upload syncs inline. The tradeoff is tail latency: requests arriving at the start of a window wait up to `SYNC_LINGER_MS` for latecomers. Durability semantics are identical to inline sync — the response is not sent until `fdatasync` completes.
+
 ### Atomic Writes
 
 1. Open `.tmp/{uuid}` (UUID v4 from `uuid` crate)
@@ -233,7 +245,8 @@ sdk/ts/
 | GET    | `/v1/buckets/{name}`    | root token                  | Get bucket metadata                  |
 | PATCH  | `/v1/buckets/{name}`    | root token                  | Update bucket config                 |
 | DELETE | `/v1/buckets/{name}`    | root token                  | Delete bucket                        |
-| GET    | `//v1/openapi.json`     | none                        | OpenAPI spec                         |
+| GET    | `/v1/openapi.json`      | none                        | OpenAPI spec                         |
+| GET    | `/metrics`              | none                        | Prometheus metrics scrape            |
 | GET    | `/livez`                | none                        | Liveness probe (process alive)       |
 | GET    | `/readyz`               | none                        | Readiness probe (deps reachable)     |
 
@@ -308,18 +321,22 @@ Object write routes (PUT, multipart part upload) remove both the body limit and 
 
 ## Configuration
 
-| Variable             | Default                 | What It Controls at Runtime                                       |
-| -------------------- | ----------------------- | ----------------------------------------------------------------- |
-| `OBJECTS_ROOT_TOKEN` | (required)              | Root auth token; also the HMAC key for derived tokens             |
-| `OBJECTS_DATA_DIR`   | `/data`                 | Root directory for all bucket subdirectories and `.tmp/`          |
-| `OBJECTS_INDEX_DIR`  | `/data/.index`          | Where fjall writes its LSM-tree files                             |
-| `ADDRESS`            | `0.0.0.0:9000`          | Public bind address (REST + S3)                                   |
-| `METRICS_ADDRESS`    | `127.0.0.1:9001`        | Internal Prometheus `/metrics` scrape endpoint                    |
-| `LOG_LEVEL`          | `info`                  | `tracing` filter directive                                        |
-| `OTLP_ENABLED`       | `false`                 | Whether to export traces to `OTLP_ENDPOINT`                       |
-| `OTLP_ENDPOINT`      | `http://localhost:4317` | OTLP collector gRPC address                                       |
-| `OBJECTS_URL`        | (none)                  | Public base URL for object URLs returned by SDK `client.url(key)` |
-| `ENVIRONMENT`        | (none)                  | `development` enables pretty log output                           |
+| Variable                | Default                 | What It Controls at Runtime                                                              |
+| ----------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
+| `OBJECTS_ROOT_TOKEN`    | (required)              | Root auth token; also the HMAC key for derived tokens                                    |
+| `OBJECTS_DATA_DIR`      | `/data`                 | Root directory for all bucket subdirectories and `.tmp/`                                 |
+| `OBJECTS_INDEX_DIR`     | `/data/.index`          | Where fjall writes its LSM-tree files                                                    |
+| `ADDRESS`               | `0.0.0.0:9000`          | Public bind address for REST, S3, `/metrics`, and health probes                          |
+| `LOG_LEVEL`             | `info`                  | `tracing` filter directive                                                               |
+| `OTLP_ENABLED`          | `false`                 | Whether to export traces to `OTLP_ENDPOINT`                                              |
+| `OTLP_ENDPOINT`         | `http://localhost:4317` | OTLP collector gRPC address                                                              |
+| `OTLP_SAMPLE_RATE`      | `0.1`                   | Fraction of traces sampled (0.0 = never, 1.0 = always); only effective when OTLP_ENABLED |
+| `OBJECTS_URL`           | (none)                  | Public base URL for object URLs returned by SDK `client.url(key)`                        |
+| `SYNC_LINGER_MS`        | `5`                     | fdatasync batching window; 0 = inline sync per upload (see Sync Linger Batching)         |
+| `DRAIN_TIMEOUT_SECS`    | `30`                    | Seconds to wait for in-flight requests to drain after shutdown signal; 0 = wait forever  |
+| `GC_TEMP_TTL_SECS`      | `3600`                  | Min age for `.tmp/` orphans to be eligible for startup GC                                |
+| `GC_MULTIPART_TTL_SECS` | `86400`                 | Min age for incomplete multipart uploads to be eligible for startup GC                   |
+| `ENVIRONMENT`           | (none)                  | `development` enables pretty log output                                                  |
 
 ## Failure Modes
 

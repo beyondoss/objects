@@ -1,6 +1,6 @@
 # @beyond.dev/objects
 
-S3-compatible object storage SDK for the Beyond platform. Stream uploads, conditional writes, prefix-paginated listing.
+Store and retrieve objects on the Beyond platform — streaming uploads, conditional writes, prefix-paginated listing.
 
 ## Install
 
@@ -15,7 +15,7 @@ Requires Node.js 18+.
 ```ts
 import { createObjectsClient } from "@beyond.dev/objects";
 
-// reads OBJECTS_URL + OBJECTS_ROOT_TOKEN from the environment
+// reads BEYOND_OBJECTS_URL + BEYOND_OBJECTS_ROOT_TOKEN from the environment
 const objects = createObjectsClient();
 
 const { data, error } = await objects.put("avatar.png", file, {
@@ -38,16 +38,16 @@ Every method returns a discriminated `{ data, error, response }` tuple — error
 createObjectsClient(opts?: ObjectsClientOptions): ObjectsClient
 ```
 
-| Option       | Type       | Default                          | Description                              |
-| ------------ | ---------- | -------------------------------- | ---------------------------------------- |
-| `url`        | `string`   | `process.env.OBJECTS_URL`        | Base URL of the beyond-objects server    |
-| `token`      | `string`   | `process.env.OBJECTS_ROOT_TOKEN` | Bearer token (root, or derived)          |
-| `bucket`     | `string`   | `"default"`                      | Bucket this client operates on           |
-| `fetch`      | `function` | `globalThis.fetch`               | Custom fetch (for pooling or test mocks) |
-| `timeout`    | `number`   | —                                | Per-request timeout in milliseconds      |
-| `retries`    | `number`   | `2`                              | Max retries on transient 5xx failures    |
-| `onRequest`  | `function` | —                                | Called before each request               |
-| `onResponse` | `function` | —                                | Called after each response with duration |
+| Option       | Type       | Default                                 | Description                              |
+| ------------ | ---------- | --------------------------------------- | ---------------------------------------- |
+| `url`        | `string`   | `process.env.BEYOND_OBJECTS_URL`        | Base URL of the beyond-objects server    |
+| `token`      | `string`   | `process.env.BEYOND_OBJECTS_ROOT_TOKEN` | Bearer token (root, or derived)          |
+| `bucket`     | `string`   | `"default"`                             | Bucket this client operates on           |
+| `fetch`      | `function` | `globalThis.fetch`                      | Custom fetch (for pooling or test mocks) |
+| `timeout`    | `number`   | —                                       | Per-request timeout in milliseconds      |
+| `retries`    | `number`   | `2`                                     | Max retries on transient 5xx failures    |
+| `onRequest`  | `function` | —                                       | Called before each request               |
+| `onResponse` | `function` | —                                       | Called after each response with duration |
 
 ### Objects
 
@@ -87,11 +87,11 @@ client.url(key):               string                      // pure construction
 
 `ListOptions`:
 
-| Option   | Type     | Description                                    |
-| -------- | -------- | ---------------------------------------------- |
-| `prefix` | `string` | Only return keys with this prefix              |
-| `cursor` | `string` | Last key of the previous page (exclusive)      |
-| `limit`  | `number` | Max keys per page (default `1000`, max `1000`) |
+| Option   | Type     | Description                                               |
+| -------- | -------- | --------------------------------------------------------- |
+| `prefix` | `string` | Only return keys with this prefix                         |
+| `cursor` | `string` | Opaque cursor from `data.nextCursor` of the previous page |
+| `limit`  | `number` | Max keys per page (default `1000`, max `1000`)            |
 
 ### Buckets
 
@@ -117,10 +117,32 @@ Per-bucket tokens are `HMAC-SHA256(rootToken, bucketName)` in lowercase hex — 
 import { createObjectsClient, deriveToken } from "@beyond.dev/objects";
 
 const imagesToken = await deriveToken(
-  process.env.OBJECTS_ROOT_TOKEN!,
+  process.env.BEYOND_OBJECTS_ROOT_TOKEN!,
   "images",
 );
 const images = createObjectsClient({ bucket: "images", token: imagesToken });
+```
+
+```ts
+createS3Credentials(rootToken: string, bucket: string): Promise<S3Credentials>
+```
+
+Derives AWS-style credentials (`accessKeyId`, `secretAccessKey`) for use with any S3-compatible client. Pass `"root"` to get root credentials.
+
+```ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { createS3Credentials } from "@beyond.dev/objects";
+
+const creds = await createS3Credentials(
+  process.env.BEYOND_OBJECTS_ROOT_TOKEN!,
+  "images",
+);
+const s3 = new S3Client({
+  endpoint: process.env.BEYOND_OBJECTS_URL,
+  forcePathStyle: true,
+  credentials: creds,
+  region: "us-east-1",
+});
 ```
 
 ## Examples
