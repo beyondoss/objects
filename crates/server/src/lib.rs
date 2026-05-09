@@ -227,21 +227,12 @@ async fn record_metrics(State(state): State<AppState>, req: Request, next: Next)
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    match state.metrics.render() {
-        Ok(body) => (
-            axum::http::StatusCode::OK,
-            [(
-                header::CONTENT_TYPE,
-                "text/plain; version=0.0.4; charset=utf-8",
-            )],
-            body,
-        )
-            .into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to encode metrics");
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
+    (
+        axum::http::StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        state.metrics.encode(),
+    )
+        .into_response()
 }
 
 pub async fn serve(config: Config) -> Result<()> {
@@ -287,7 +278,7 @@ pub async fn serve(config: Config) -> Result<()> {
         config: Arc::new(config),
         storage,
         index,
-        metrics: Arc::new(metrics::Metrics::try_new()?),
+        metrics: Arc::new(metrics::Metrics::new()),
     };
 
     let app = build_router(state.clone());
