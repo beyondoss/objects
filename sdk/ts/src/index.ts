@@ -40,6 +40,7 @@ export {
   type Range,
   type S3Credentials,
   type UpdateBucketOptions,
+  type UploadTokenResult,
 } from "./client.js";
 export { ObjectsError } from "./errors.js";
 export type { components, operations, paths } from "./types.js";

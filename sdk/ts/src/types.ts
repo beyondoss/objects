@@ -101,6 +101,28 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/{bucket}/upload-tokens": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Create a short-lived upload token scoped to a specific object key.
+     * @description The token may be handed to a browser client, which can use it as a `Bearer`
+     *     credential for exactly one `PUT /v1/{bucket}/{key}` request before expiry.
+     *     It cannot be used for GET, DELETE, or any other verb, nor for any other key.
+     */
+    post: operations["create_upload_token"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/{bucket}/{key}": {
     parameters: {
       query?: never;
@@ -185,6 +207,21 @@ export interface components {
        * @example photos
        */
       name: string;
+    };
+    /** @description Body for `POST /v1/{bucket}/upload-tokens`. */
+    CreateUploadTokenRequest: {
+      /**
+       * @description Object key this token authorizes a single PUT for.
+       * @example avatars/user123.png
+       */
+      key: string;
+      /**
+       * Format: int64
+       * @description Token lifetime in seconds. Must be between 1 and 86400 (1 day).
+       *     Defaults to 3600 (1 hour).
+       * @example 3600
+       */
+      ttl_secs?: number;
     };
     /**
      * @description Wire-format error body. The `code` field is the stable contract — clients
@@ -325,6 +362,21 @@ export interface components {
        * @example public
        */
       access: string;
+    };
+    /** @description A short-lived upload token scoped to a single object key. */
+    UploadTokenResponse: {
+      /**
+       * Format: int64
+       * @description Unix timestamp (seconds) after which the token is rejected.
+       * @example 1748003600
+       */
+      expires_at: number;
+      /**
+       * @description Bearer token to present in `Authorization: Bearer <token>` when calling
+       *     `PUT /v1/{bucket}/{key}`. Valid only for that exact key until `expires_at`.
+       * @example 1748000000:a3f9b2c1...
+       */
+      token: string;
     };
   };
   responses: never;
@@ -609,6 +661,54 @@ export interface operations {
         };
       };
       /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  create_upload_token: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /**
+         * @description Bucket name.
+         * @example photos
+         */
+        bucket: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateUploadTokenRequest"];
+      };
+    };
+    responses: {
+      /** @description Upload token created. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UploadTokenResponse"];
+        };
+      };
+      /** @description Invalid request. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Missing or invalid bearer token. */
       401: {
         headers: {
           [name: string]: unknown;

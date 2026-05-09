@@ -143,7 +143,26 @@ export interface HeadResult {
   metadata: Record<string, string>;
 }
 
+export interface UploadTokenResult {
+  /** Short-lived Bearer token to present when calling `PUT /v1/{bucket}/{key}`. */
+  token: string;
+  /** Unix timestamp (seconds) after which the token is rejected. */
+  expiresAt: number;
+}
+
 export interface ObjectsClient {
+  /**
+   * Issue a short-lived upload token scoped to a single object key. Pass this
+   * token to a browser client so it can PUT directly to the objects server
+   * without holding a long-lived credential.
+   *
+   * @param key - The exact object key the browser will upload to.
+   * @param opts.ttlSecs - Token lifetime in seconds (1–86400). Default 3600.
+   */
+  createUploadToken(
+    key: string,
+    opts?: { ttlSecs?: number },
+  ): ObjectsResult<UploadTokenResult>;
   /** Stream-upload an object. Honors `If-None-Match: "*"` and `If-Match: <etag>`. */
   put(key: string, body: PutBody, opts?: PutOptions): ObjectsResult<PutResult>;
   /**
@@ -458,7 +477,7 @@ export function createObjectsClient(
     const etag = response.headers.get("etag") ?? "";
     const contentType = response.headers.get("content-type") ?? undefined;
     const lastModifiedRaw = response.headers.get("last-modified");
-    const cors = response.headers.get("access-control-allow-origin");
+    const accessHeader = response.headers.get("x-beyond-access");
     const lastModified = lastModifiedRaw != null
       ? new Date(lastModifiedRaw)
       : undefined;
@@ -467,7 +486,7 @@ export function createObjectsClient(
         size: sizeHeader != null ? Number(sizeHeader) : 0,
         etag,
         contentType,
-        access: cors === "*" ? "public" : "private",
+        access: accessHeader === "public" ? "public" : "private",
         lastModified,
         metadata: readMetadata(response.headers),
       },
@@ -632,7 +651,52 @@ export function createObjectsClient(
     }),
   };
 
+  const createUploadToken: ObjectsClient["createUploadToken"] = cmd(
+    "createUploadToken",
+    async (key, tokenOpts) => {
+      const response = await fetchFn(
+        `${base}/v1/${encodeURIComponent(bucket)}/upload-tokens`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: authHeader,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            key,
+            ...(tokenOpts?.ttlSecs !== undefined && {
+              ttl_secs: tokenOpts.ttlSecs,
+            }),
+          }),
+        },
+      );
+      if (!response.ok) {
+        let parsed: unknown;
+        try {
+          parsed = await response.json();
+        } catch {
+          /* fall through */
+        }
+        return {
+          data: undefined,
+          error: toObjectsError(parsed, response),
+          response,
+        };
+      }
+      const raw = (await response.json()) as {
+        token: string;
+        expires_at: number;
+      };
+      return {
+        data: { token: raw.token, expiresAt: raw.expires_at },
+        error: undefined,
+        response,
+      };
+    },
+  );
+
   return {
+    createUploadToken,
     put,
     get,
     head,

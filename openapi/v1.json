@@ -397,6 +397,75 @@
         ]
       }
     },
+    "/v1/{bucket}/upload-tokens": {
+      "post": {
+        "tags": [
+          "objects"
+        ],
+        "summary": "Create a short-lived upload token scoped to a specific object key.",
+        "description": "The token may be handed to a browser client, which can use it as a `Bearer`\ncredential for exactly one `PUT /v1/{bucket}/{key}` request before expiry.\nIt cannot be used for GET, DELETE, or any other verb, nor for any other key.",
+        "operationId": "create_upload_token",
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "path",
+            "description": "Bucket name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "photos"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUploadTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Upload token created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid bearer token.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ]
+      }
+    },
     "/v1/{bucket}/{key}": {
       "get": {
         "tags": [
@@ -953,6 +1022,28 @@
           }
         }
       },
+      "CreateUploadTokenRequest": {
+        "type": "object",
+        "description": "Body for `POST /v1/{bucket}/upload-tokens`.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Object key this token authorizes a single PUT for.",
+            "example": "avatars/user123.png"
+          },
+          "ttl_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Token lifetime in seconds. Must be between 1 and 86400 (1 day).\nDefaults to 3600 (1 hour).",
+            "example": 3600,
+            "maximum": 86400,
+            "minimum": 1
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "Wire-format error body. The `code` field is the stable contract — clients\nshould switch on `code`, not on `message` (which is human-readable and may\nchange between versions).",
@@ -1168,6 +1259,28 @@
             "type": "string",
             "description": "New default access level for objects in the bucket. Existing objects\nkeep their per-object xattr; only the inherited default changes.",
             "example": "public"
+          }
+        }
+      },
+      "UploadTokenResponse": {
+        "type": "object",
+        "description": "A short-lived upload token scoped to a single object key.",
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds) after which the token is rejected.",
+            "example": 1748003600,
+            "minimum": 0
+          },
+          "token": {
+            "type": "string",
+            "description": "Bearer token to present in `Authorization: Bearer <token>` when calling\n`PUT /v1/{bucket}/{key}`. Valid only for that exact key until `expires_at`.",
+            "example": "1748000000:a3f9b2c1..."
           }
         }
       }

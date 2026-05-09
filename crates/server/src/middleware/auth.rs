@@ -9,7 +9,7 @@
 
 use axum::{
     extract::{Path, Request, State},
-    http::{HeaderMap, header},
+    http::{HeaderMap, Method, header},
     middleware::Next,
     response::Response,
 };
@@ -18,7 +18,7 @@ use secrecy::ExposeSecret;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-use crate::{AppState, error::ApiError};
+use crate::{AppState, error::ApiError, upload_token};
 
 const DEFAULT_BUCKET: &str = "default";
 
@@ -97,21 +97,32 @@ pub async fn require_bucket(
 
 /// Used on routes that have BOTH `{bucket}` and `{*key}` path parameters: the
 /// `Path` extractor needs to capture both because the matched path includes both.
+///
+/// In addition to the standard bucket/root token, this middleware also accepts
+/// short-lived upload tokens (see `upload_token`) exclusively on `PUT` requests.
 pub async fn require_bucket_with_key(
     State(state): State<AppState>,
-    Path((bucket, _key)): Path<(String, String)>,
+    Path((bucket, key)): Path<(String, String)>,
     req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
     let presented = extract_bearer(req.headers()).ok_or(ApiError::Unauthorized)?;
-    if !verify(
-        state.config.objects_root_token.expose_secret(),
-        &bucket,
-        &presented,
-    ) {
-        return Err(ApiError::Unauthorized);
+    let root = state.config.objects_root_token.expose_secret();
+
+    if verify(root, &bucket, &presented) {
+        return Ok(next.run(req).await);
     }
-    Ok(next.run(req).await)
+
+    // Upload tokens (format: "{exp}:{hmac}") are only accepted on PUT — they
+    // are scoped to a single key and expire, so broader access is not granted.
+    if req.method() == Method::PUT
+        && presented.contains(':')
+        && upload_token::validate(root, &bucket, &key, &presented)
+    {
+        return Ok(next.run(req).await);
+    }
+
+    Err(ApiError::Unauthorized)
 }
 
 #[cfg(test)]

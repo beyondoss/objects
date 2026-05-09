@@ -1,6 +1,7 @@
 pub mod buckets;
 pub mod healthz;
 pub mod objects;
+pub mod upload_tokens;
 
 use std::time::Duration;
 
@@ -21,6 +22,8 @@ use crate::{
     AppState,
     middleware::auth::{require_bucket, require_bucket_with_key, require_root},
 };
+
+use upload_tokens::{CreateUploadTokenRequest, UploadTokenResponse};
 
 pub struct BearerAuth;
 
@@ -62,6 +65,7 @@ impl utoipa::Modify for BearerAuth {
         buckets::get_bucket,
         buckets::update_bucket,
         buckets::delete_bucket,
+        upload_tokens::create_upload_token,
     ),
     components(schemas(
         crate::error::ErrorBody,
@@ -77,6 +81,8 @@ impl utoipa::Modify for BearerAuth {
         buckets::UpdateBucketRequest,
         buckets::BucketResponse,
         buckets::ListBucketsResponse,
+        CreateUploadTokenRequest,
+        UploadTokenResponse,
     )),
     tags(
         (name = "system", description = "Health and service metadata."),
@@ -99,6 +105,19 @@ pub fn router(state: AppState) -> Router<AppState> {
                 .delete(buckets::delete_bucket),
         )
         .route_layer(from_fn_with_state(state.clone(), require_root))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ));
+
+    // Upload token issuance: requires a valid bucket token, returns a short-lived
+    // key-scoped token the browser can use for a single PUT.
+    let upload_tokens_router = Router::new()
+        .route(
+            "/v1/{bucket}/upload-tokens",
+            post(upload_tokens::create_upload_token),
+        )
+        .route_layer(from_fn_with_state(state.clone(), require_bucket))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
@@ -140,6 +159,7 @@ pub fn router(state: AppState) -> Router<AppState> {
 
     Router::new()
         .merge(buckets_router)
+        .merge(upload_tokens_router)
         .merge(object_writes)
         .merge(object_reads)
         .merge(bucket_listing)

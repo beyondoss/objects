@@ -636,10 +636,12 @@ fn build_object_headers(info: &beyond_objects_storage::ObjectInfo) -> HeaderMap 
     if let Ok(v) = dt.to_rfc2822().parse() {
         h.insert(header::LAST_MODIFIED, v);
     }
-    if info.access == AccessLevel::Public
-        && let Ok(v) = "*".parse()
+    // Expose access level as a dedicated header so clients don't infer it from
+    // CORS headers (which are now sent on all responses via CorsLayer).
+    if let Ok(name) = HeaderName::try_from(ACCESS_HEADER)
+        && let Ok(value) = info.access.as_str().parse()
     {
-        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+        h.insert(name, value);
     }
     for (k, val) in &info.user_metadata {
         let header_name = format!("{USER_META_PREFIX}{k}");

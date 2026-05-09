@@ -7,6 +7,7 @@ pub mod routes;
 pub mod s3;
 pub mod telemetry;
 pub mod test_support;
+pub mod upload_token;
 
 use std::{sync::Arc, time::Instant};
 
@@ -22,6 +23,7 @@ use axum::{
 use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer,
+    cors::{Any, CorsLayer},
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
     trace::{MakeSpan, TraceLayer},
 };
@@ -220,6 +222,12 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(PropagateRequestIdLayer::x_request_id())
                 .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
                 .layer(CatchPanicLayer::new()),
+        )
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
         )
 }
 
