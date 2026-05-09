@@ -32,7 +32,6 @@ pub fn server() -> &'static TestServer {
                     data_dir: dir.path().join("data"),
                     index_dir: dir.path().join("index"),
                     address: "127.0.0.1:0".into(),
-                    metrics_address: "127.0.0.1:0".into(),
                     log_level: "error".into(),
                     otlp_enabled: false,
                     otlp_endpoint: "http://localhost:4317".into(),

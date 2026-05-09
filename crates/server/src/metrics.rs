@@ -11,7 +11,7 @@ macro_rules! define_metrics {
             $(
                 $metric_type:ident $field:ident($metric_name:literal)
                 $([$($label:literal),+ $(,)?])?
-                $(buckets = [$($bucket:expr),+ $(,)?])?
+                $(buckets = $buckets:expr)?
                 => $help:literal
             ),* $(,)?
         }
@@ -29,7 +29,7 @@ macro_rules! define_metrics {
                     let $field = define_metrics!(
                         @create $metric_type $metric_name $help
                         $([$($label),+])?
-                        $(buckets = [$($bucket),+])?
+                        $(buckets = $buckets)?
                     );
                     registry.register(Box::new($field.clone())).expect("metric not yet registered");
                 )*
@@ -86,52 +86,61 @@ macro_rules! define_metrics {
     (@create histogram $name:literal $help:literal) => {
         Histogram::with_opts(HistogramOpts::new($name, $help)).expect("valid metric")
     };
-    (@create histogram $name:literal $help:literal buckets = [$($bucket:expr),+]) => {
+    (@create histogram $name:literal $help:literal buckets = $buckets:expr) => {
         Histogram::with_opts(
-            HistogramOpts::new($name, $help).buckets(vec![$($bucket),+])
+            HistogramOpts::new($name, $help).buckets($buckets.to_vec())
         ).expect("valid metric")
     };
     (@create histogram $name:literal $help:literal [$($label:literal),+]) => {
         HistogramVec::new(HistogramOpts::new($name, $help), &[$($label),+]).expect("valid metric")
     };
-    (@create histogram $name:literal $help:literal [$($label:literal),+] buckets = [$($bucket:expr),+]) => {
+    (@create histogram $name:literal $help:literal [$($label:literal),+] buckets = $buckets:expr) => {
         HistogramVec::new(
-            HistogramOpts::new($name, $help).buckets(vec![$($bucket),+]),
+            HistogramOpts::new($name, $help).buckets($buckets.to_vec()),
             &[$($label),+],
         ).expect("valid metric")
     };
     (@create histogram_vec $name:literal $help:literal [$($label:literal),+]) => {
         HistogramVec::new(HistogramOpts::new($name, $help), &[$($label),+]).expect("valid metric")
     };
-    (@create histogram_vec $name:literal $help:literal [$($label:literal),+] buckets = [$($bucket:expr),+]) => {
+    (@create histogram_vec $name:literal $help:literal [$($label:literal),+] buckets = $buckets:expr) => {
         HistogramVec::new(
-            HistogramOpts::new($name, $help).buckets(vec![$($bucket),+]),
+            HistogramOpts::new($name, $help).buckets($buckets.to_vec()),
             &[$($label),+],
         ).expect("valid metric")
     };
 }
+
+// Bucket sets grouped by operation latency profile.
+
+/// HTTP request latency — from 5ms fast-path to 2.5s slow requests.
+const HTTP_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5];
+/// Storage I/O operations — 100µs for cache hits through 5s for large reads/writes.
+const STORAGE_BUCKETS: &[f64] = &[
+    0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
+];
 
 define_metrics! {
     pub struct Metrics {
         counter_vec http_requests_total("http_requests_total")["method", "path", "status"]
             => "Total HTTP requests",
         histogram_vec http_request_duration_seconds("http_request_duration_seconds")["method", "path"]
-            buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
+            buckets = HTTP_BUCKETS
             => "HTTP request duration in seconds",
         gauge http_connections_active("http_connections_active")
             => "Number of HTTP requests currently in flight",
         // op label: write | read | head | delete | copy | move | initiate_multipart | upload_part | complete_multipart | abort_multipart
-        histogram_vec storage_operation_seconds("storage_operation_seconds")["op"]
-            buckets = [0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0]
+        histogram_vec storage_operation_seconds("objects_storage_operation_seconds")["op"]
+            buckets = STORAGE_BUCKETS
             => "Storage operation duration in seconds",
-        // outcome label: completed | aborted
-        counter_vec bytes_uploaded_total("bytes_uploaded_total")["bucket"]
+        counter_vec bytes_uploaded_total("objects_bytes_uploaded_total")["bucket"]
             => "Total bytes uploaded to the object store",
-        counter_vec bytes_downloaded_total("bytes_downloaded_total")["bucket"]
+        counter_vec bytes_downloaded_total("objects_bytes_downloaded_total")["bucket"]
             => "Total bytes downloaded from the object store",
-        gauge multipart_uploads_active("multipart_uploads_active")
+        gauge multipart_uploads_active("objects_multipart_uploads_active")
             => "Multipart upload sessions currently in progress",
-        counter_vec multipart_uploads_total("multipart_uploads_total")["outcome"]
+        // outcome label: completed | aborted
+        counter_vec multipart_uploads_total("objects_multipart_uploads_total")["outcome"]
             => "Multipart upload sessions that reached a terminal state (completed or aborted)",
     }
 }

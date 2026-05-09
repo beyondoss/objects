@@ -14,7 +14,6 @@ use crate::{AppState, Config, build_router, metrics::Metrics};
 
 pub struct TestServer {
     pub url: String,
-    pub metrics_url: String,
     pub addr: std::net::SocketAddr,
     pub root_token: String,
 }
@@ -40,9 +39,6 @@ pub async fn start(config: Config) -> Result<TestServer> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
 
-    let metrics_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let metrics_addr = metrics_listener.local_addr()?;
-
     let root_token = config.objects_root_token.expose_secret().clone();
 
     let state = AppState {
@@ -51,19 +47,14 @@ pub async fn start(config: Config) -> Result<TestServer> {
         index,
         metrics: Arc::new(Metrics::new()),
     };
-    let app = build_router(state.clone());
-    let metrics_app = crate::build_metrics_router(state);
+    let app = build_router(state);
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.ok();
     });
-    tokio::spawn(async move {
-        axum::serve(metrics_listener, metrics_app).await.ok();
-    });
 
     Ok(TestServer {
         url: format!("http://{addr}"),
-        metrics_url: format!("http://{metrics_addr}"),
         addr,
         root_token,
     })

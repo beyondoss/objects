@@ -30,8 +30,17 @@ pub struct OtelGuard {
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        if let Err(e) = self.provider.shutdown() {
-            eprintln!("error shutting down tracer provider: {e:?}");
+        // Flush buffered spans with a hard 5-second deadline. Without this bound,
+        // shutdown blocks indefinitely if the OTLP collector is unreachable at exit time.
+        let provider = std::mem::replace(&mut self.provider, SdkTracerProvider::builder().build());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(provider.shutdown());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("error shutting down tracer provider: {e:?}"),
+            Err(_) => eprintln!("tracer provider shutdown timed out or panicked"),
         }
     }
 }

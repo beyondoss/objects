@@ -18,7 +18,7 @@ async fn openapi_json_served() {
 #[tokio::test]
 async fn metrics_text() {
     let res = client()
-        .get(format!("{}/metrics", crate::common::server().metrics_url))
+        .get(format!("{}/metrics", crate::common::server().url))
         .send()
         .await
         .unwrap();

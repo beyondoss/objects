@@ -155,9 +155,10 @@ impl<B> MakeSpan<B> for OtelMakeSpan {
         let span = tracing::info_span!(
             "http.request",
             http.method = %request.method(),
-            http.uri = %request.uri(),
-            http.version = ?request.version(),
+            http.target = %request.uri(),
+            http.flavor = ?request.version(),
             otel.kind = "server",
+            http.route = tracing::field::Empty,
             http.status_code = tracing::field::Empty,
             bucket = tracing::field::Empty,
             key = tracing::field::Empty,
@@ -178,10 +179,9 @@ impl MakeRequestId for MakeRequestUuid {
     }
 }
 
-/// Build the full router. Public routes (`/livez`, `/readyz`, `/v1/openapi.json`)
-/// sit outside the auth boundary; per-resource auth is applied inside
-/// `routes::router`. The `/metrics` endpoint lives on a separate internal-only
-/// listener built via `build_metrics_router`.
+/// Build the full router. Public routes (`/livez`, `/readyz`, `/metrics`,
+/// `/v1/openapi.json`) sit outside the auth boundary; per-resource auth is
+/// applied inside `routes::router`.
 ///
 /// The S3-compatible surface is mounted as `fallback_service` so that explicit
 /// `/v1/*`, `/livez`, `/readyz`, and `/v1/openapi.json` routes always win. Any
@@ -201,6 +201,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/livez", get(routes::healthz::livez))
         .route("/readyz", get(routes::healthz::readyz))
+        .route("/metrics", get(metrics_handler))
         .with_state(state.clone())
         .fallback_service(
             ServiceBuilder::new()
@@ -218,14 +219,6 @@ pub fn build_router(state: AppState) -> Router {
         )
 }
 
-/// Build the internal metrics router. Bind this on a private interface — the
-/// `/metrics` endpoint is unauthenticated.
-pub fn build_metrics_router(state: AppState) -> Router {
-    Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(state)
-}
-
 async fn record_metrics(State(state): State<AppState>, req: Request, next: Next) -> Response {
     state.metrics.http_connections_active.inc();
     let method = req.method().clone();
@@ -237,6 +230,7 @@ async fn record_metrics(State(state): State<AppState>, req: Request, next: Next)
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| "<unmatched>".to_string());
+    tracing::Span::current().record("http.route", &path);
     let timer = state
         .metrics
         .http_request_duration_seconds
@@ -246,13 +240,15 @@ async fn record_metrics(State(state): State<AppState>, req: Request, next: Next)
     let response = next.run(req).await;
 
     state.metrics.http_connections_active.dec();
-    let status = response.status().as_u16().to_string();
+    let status = response.status().as_u16();
     state
         .metrics
         .http_requests_total
-        .with_label_values(&[method.as_str(), &path, &status])
+        .with_label_values(&[method.as_str(), &path, &status.to_string()])
         .inc();
     timer.observe(start.elapsed().as_secs_f64());
+
+    tracing::Span::current().record("http.status_code", status);
 
     response
 }
@@ -342,7 +338,6 @@ pub async fn serve(config: Config) -> Result<()> {
     }
 
     let address = config.address.clone();
-    let metrics_address = config.metrics_address.clone();
     let drain_timeout_secs = config.drain_timeout_secs;
     let state = AppState {
         config: Arc::new(config),
@@ -351,18 +346,9 @@ pub async fn serve(config: Config) -> Result<()> {
         metrics: Arc::new(metrics::Metrics::new()),
     };
 
-    let app = build_router(state.clone());
-    let metrics_app = build_metrics_router(state);
+    let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(address = %address, "listening");
-
-    let metrics_listener = tokio::net::TcpListener::bind(&metrics_address).await?;
-    tracing::info!(address = %metrics_address, "metrics listening");
-    let metrics_task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(metrics_listener, metrics_app).await {
-            tracing::error!(err = %e, "metrics server exited");
-        }
-    });
 
     // Pair a oneshot with the shutdown future so we can start the drain timer
     // only after the signal fires, not from process start.
@@ -389,7 +375,6 @@ pub async fn serve(config: Config) -> Result<()> {
         serve.await?;
     }
 
-    metrics_task.abort();
     Ok(())
 }
 

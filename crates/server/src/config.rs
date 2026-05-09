@@ -22,11 +22,6 @@ pub struct Config {
     #[arg(long, env = "ADDRESS", default_value = "0.0.0.0:9000")]
     pub address: String,
 
-    /// Internal-only metrics address. Bind this to a private interface — the
-    /// `/metrics` endpoint is not authenticated.
-    #[arg(long, env = "METRICS_ADDRESS", default_value = "127.0.0.1:9001")]
-    pub metrics_address: String,
-
     #[arg(long, env = "LOG_LEVEL", default_value = "info")]
     pub log_level: String,
 
@@ -84,7 +79,6 @@ impl std::fmt::Debug for Config {
             .field("data_dir", &self.data_dir)
             .field("index_dir", &self.index_dir)
             .field("address", &self.address)
-            .field("metrics_address", &self.metrics_address)
             .field("log_level", &self.log_level)
             .field("otlp_enabled", &self.otlp_enabled)
             .field("otlp_endpoint", &self.otlp_endpoint)
