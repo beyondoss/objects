@@ -48,7 +48,8 @@ impl utoipa::Modify for BearerAuth {
     ),
     modifiers(&BearerAuth),
     paths(
-        healthz::handler,
+        healthz::livez,
+        healthz::readyz,
         objects::put_object,
         objects::get_object,
         objects::head_object,

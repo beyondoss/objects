@@ -10,7 +10,8 @@ async fn openapi_json_served() {
         Some('3')
     );
     assert!(body["paths"]["/v1/buckets"].is_object());
-    assert!(body["paths"]["/healthz"].is_object());
+    assert!(body["paths"]["/livez"].is_object());
+    assert!(body["paths"]["/readyz"].is_object());
     assert!(body["components"]["securitySchemes"]["BearerAuth"].is_object());
 }
 

@@ -31,6 +31,10 @@ pub fn server() -> &'static TestServer {
                     otlp_endpoint: "http://localhost:4317".into(),
                     public_url: None,
                     sync_linger_ms: 0,
+                    drain_timeout_secs: 0,
+                    otlp_sample_rate: 1.0,
+                    gc_temp_ttl_secs: 3600,
+                    gc_multipart_ttl_secs: 86400,
                 };
                 let server = beyond_objects::test_support::start(config)
                     .await

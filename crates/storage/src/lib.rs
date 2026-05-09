@@ -61,6 +61,17 @@ impl Storage {
         }
     }
 
+    /// Remove `path` and log a warning if it fails. Used for deterministic temp-file
+    /// cleanup on error paths — avoids fire-and-forget spawns that can silently
+    /// vanish under runtime shutdown.
+    pub(crate) async fn cleanup_tmp(path: &std::path::Path) {
+        if let Err(e) = tokio::fs::remove_file(path).await {
+            tracing::warn!(path = %path.display(), err = %e, "temp file cleanup failed");
+        }
+    }
+}
+
+impl Storage {
     /// Resolve bucket access level: cache-first, falling back to a filesystem
     /// `getxattr` on a miss. Populates the cache on the slow path.
     pub(crate) fn cached_bucket_access(
@@ -68,10 +79,10 @@ impl Storage {
         bucket: &str,
         bucket_path: &Path,
     ) -> Result<AccessLevel> {
-        if let Ok(cache) = self.bucket_access.read() {
-            if let Some(&access) = cache.get(bucket) {
-                return Ok(access);
-            }
+        if let Ok(cache) = self.bucket_access.read()
+            && let Some(&access) = cache.get(bucket)
+        {
+            return Ok(access);
         }
         let access = xattr::read_access(bucket_path)?.unwrap_or_default();
         if let Ok(mut cache) = self.bucket_access.write() {

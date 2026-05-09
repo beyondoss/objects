@@ -166,7 +166,7 @@ crates/
 │   │   ├── routes/
 │   │   │   ├── objects.rs   PUT/GET/HEAD/DELETE/PATCH/POST handlers
 │   │   │   ├── buckets.rs   bucket CRUD (root-token only)
-│   │   │   └── healthz.rs   /healthz
+│   │   │   └── healthz.rs   /livez, /readyz
 │   │   └── s3/
 │   │       ├── handler.rs   S3 trait impl → storage calls
 │   │       ├── auth.rs      SigV4 ↔ HMAC token mapping
@@ -234,9 +234,10 @@ sdk/ts/
 | PATCH  | `/v1/buckets/{name}`    | root token                  | Update bucket config                 |
 | DELETE | `/v1/buckets/{name}`    | root token                  | Delete bucket                        |
 | GET    | `//v1/openapi.json`     | none                        | OpenAPI spec                         |
-| GET    | `/healthz`              | none                        | Health check                         |
+| GET    | `/livez`                | none                        | Liveness probe (process alive)       |
+| GET    | `/readyz`               | none                        | Readiness probe (deps reachable)     |
 
-### S3-Compatible (fallback, all explicit `/v1/*` and `/healthz` take priority)
+### S3-Compatible (fallback, all explicit `/v1/*`, `/livez`, `/readyz` take priority)
 
 ListBuckets · CreateBucket · DeleteBucket · HeadBucket · PutObject · GetObject · HeadObject · DeleteObject · CopyObject · ListObjectsV2 · CreateMultipartUpload · UploadPart · CompleteMultipartUpload · AbortMultipartUpload · ListMultipartUploads · ListParts
 

@@ -8,6 +8,7 @@ use crate::write::{validate_bucket, validate_key};
 use crate::{Result, Storage, StorageError, xattr};
 
 impl Storage {
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo> {
         validate_bucket(bucket)?;
         validate_key(key)?;
@@ -43,6 +44,7 @@ impl Storage {
     /// Opens the file first then fstats the fd — saves one path lookup vs stat-then-open,
     /// and eliminates the TOCTOU window between the two separate syscalls. Xattr reads
     /// use the open fd directly (`fgetxattr`) to avoid re-resolving the path in the VFS.
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn open_object(&self, bucket: &str, key: &str) -> Result<(ObjectInfo, fs::File)> {
         validate_bucket(bucket)?;
         validate_key(key)?;
@@ -76,6 +78,7 @@ impl Storage {
     }
 
     /// Delete an object. Idempotent: succeeds silently if the object is already gone.
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<()> {
         validate_bucket(bucket)?;
         validate_key(key)?;
@@ -92,6 +95,7 @@ impl Storage {
     /// Note: `tokio::fs::copy` does not preserve xattrs — we re-read them from the
     /// source and set them on the destination explicitly. The copy goes through a
     /// temp file so the destination either appears fully-formed or not at all.
+    #[tracing::instrument(skip_all, fields(src_bucket, src_key, dst_bucket, dst_key))]
     pub async fn copy_object(
         &self,
         src_bucket: &str,
@@ -116,32 +120,23 @@ impl Storage {
         let tmp_dir = self.data_dir.join(".tmp");
         fs::create_dir_all(&tmp_dir).await?;
         let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
-        fs::copy(&src, &tmp_path).await.inspect_err(|_| {
-            let p = tmp_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = fs::remove_file(&p).await {
-                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                }
-            });
-        })?;
+        if let Err(e) = fs::copy(&src, &tmp_path).await {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e.into());
+        }
         let attrs = xattr::read_object(&src)?;
-        xattr::set_object(
+        if let Err(e) = xattr::set_object(
             &tmp_path,
             &attrs.etag,
             attrs.content_type.as_deref(),
             attrs.access,
             &attrs.user_metadata,
-        )
-        // attrs.access is None when the source was inheriting from its bucket;
-        // copying preserves "inherit" semantics by leaving the dst xattr unset too.
-        .inspect_err(|_| {
-            let p = tmp_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = fs::remove_file(&p).await {
-                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                }
-            });
-        })?;
+            // attrs.access is None when the source was inheriting from its bucket;
+            // copying preserves "inherit" semantics by leaving the dst xattr unset too.
+        ) {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
         if let Some(p) = dst.parent() {
             fs::create_dir_all(p).await?;
         }
@@ -150,6 +145,7 @@ impl Storage {
     }
 
     /// Rename within same bucket or across buckets. Atomic when on the same volume.
+    #[tracing::instrument(skip_all, fields(src_bucket, src_key, dst_bucket, dst_key))]
     pub async fn move_object(
         &self,
         src_bucket: &str,

@@ -81,7 +81,9 @@ describe("auth — construction errors", () => {
   });
 
   it("constructing without a url throws", () => {
-    expect(() => createObjectsClient({ token: "x" })).toThrow(/BEYOND_OBJECTS_URL/);
+    expect(() => createObjectsClient({ token: "x" })).toThrow(
+      /BEYOND_OBJECTS_URL/,
+    );
   });
 });
 

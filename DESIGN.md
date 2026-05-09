@@ -646,15 +646,20 @@ fn init_tracing(otel_endpoint: Option<&str>) {
 
 Prometheus metrics exposed at `/metrics` on the internal metrics port (not the main API port).
 
-### Health check
+### Health checks
 
 ```
-GET /healthz
+GET /livez
+→ 200 { "status": "ok", "version": "0.1.0" }
+
+GET /readyz
 → 200 { "status": "ok", "version": "0.1.0" }
 → 503 { "status": "degraded", "version": "0.1.0" }
 ```
 
-Matches auth and queue. Checks that the data directory and fjall index are reachable. Version injected via `env!("CARGO_PKG_VERSION")`.
+`/livez` — Kubernetes `livenessProbe`. Always 200 while the process is running; no dependency checks.
+
+`/readyz` — Kubernetes `readinessProbe`. Checks that the data directory and fjall index are reachable; returns 503 until both are up. Version injected via `env!("CARGO_PKG_VERSION")`.
 
 ### xtask: generate-openapi
 

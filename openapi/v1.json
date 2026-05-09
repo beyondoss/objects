@@ -10,16 +10,37 @@
     "version": "1"
   },
   "paths": {
-    "/healthz": {
+    "/livez": {
       "get": {
         "tags": [
           "system"
         ],
-        "summary": "Health check. Probes the data directory and the listing index. Returns 200\nwhen both are reachable, 503 otherwise.",
-        "operationId": "healthz",
+        "summary": "Liveness probe. Returns 200 while the process is running. Does **not** probe\ndependencies — use `/readyz` for Kubernetes `readinessProbe`.",
+        "operationId": "livez",
         "responses": {
           "200": {
-            "description": "Healthy: data directory and listing index are reachable.",
+            "description": "Process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthzResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Readiness probe. Probes the data directory and the listing index. Returns 200\nwhen both are reachable, 503 otherwise. Use for Kubernetes `readinessProbe`.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "description": "Ready: data directory and listing index are reachable.",
             "content": {
               "application/json": {
                 "schema": {

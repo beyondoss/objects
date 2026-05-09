@@ -4,885 +4,925 @@
  */
 
 export interface paths {
-    "/healthz": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Health check. Probes the data directory and the listing index. Returns 200
-         *     when both are reachable, 503 otherwise.
-         */
-        get: operations["healthz"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+  "/livez": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/buckets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List all buckets, sorted by name. */
-        get: operations["list_buckets"];
-        put?: never;
-        /**
-         * Create a bucket. Idempotent: succeeds if the bucket already exists, but the
-         *     access level is updated to match the request.
-         */
-        post: operations["create_bucket"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /**
+     * Liveness probe. Returns 200 while the process is running. Does **not** probe
+     *     dependencies — use `/readyz` for Kubernetes `readinessProbe`.
+     */
+    get: operations["livez"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/readyz": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/buckets/{name}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get bucket metadata. */
-        get: operations["get_bucket"];
-        put?: never;
-        post?: never;
-        /** Delete a bucket. The bucket must be empty. */
-        delete: operations["delete_bucket"];
-        options?: never;
-        head?: never;
-        /** Update bucket configuration. */
-        patch: operations["update_bucket"];
-        trace?: never;
+    /**
+     * Readiness probe. Probes the data directory and the listing index. Returns 200
+     *     when both are reachable, 503 otherwise. Use for Kubernetes `readinessProbe`.
+     */
+    get: operations["readyz"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/buckets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/{bucket}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List object keys in a bucket, with prefix scan and cursor pagination. */
-        get: operations["list_objects"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** List all buckets, sorted by name. */
+    get: operations["list_buckets"];
+    put?: never;
+    /**
+     * Create a bucket. Idempotent: succeeds if the bucket already exists, but the
+     *     access level is updated to match the request.
+     */
+    post: operations["create_bucket"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/buckets/{name}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/v1/{bucket}/{key}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Download an object. Public objects are served without auth (and with
-         *     `Access-Control-Allow-Origin: *`); private objects require a valid bearer
-         *     token. Single-range requests (`Range: bytes=a-b`) return 206.
-         */
-        get: operations["get_object"];
-        /**
-         * Stream-upload an object. Honors `If-None-Match: *` and `If-Match: "<etag>"`
-         *     for conditional writes.
-         */
-        put: operations["put_object"];
-        /** Server-side copy from a source key in the same bucket. */
-        post: operations["copy_object"];
-        /** Delete an object. Idempotent. */
-        delete: operations["delete_object"];
-        options?: never;
-        /** Object metadata, identical headers to GET but no body. */
-        head: operations["head_object"];
-        /**
-         * Move (rename) an object or update its access level. Body is `{ "key": "..." }`,
-         *     `{ "access": "public"|"private" }`, or both.
-         */
-        patch: operations["patch_object"];
-        trace?: never;
+    /** Get bucket metadata. */
+    get: operations["get_bucket"];
+    put?: never;
+    post?: never;
+    /** Delete a bucket. The bucket must be empty. */
+    delete: operations["delete_bucket"];
+    options?: never;
+    head?: never;
+    /** Update bucket configuration. */
+    patch: operations["update_bucket"];
+    trace?: never;
+  };
+  "/v1/{bucket}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    /** List object keys in a bucket, with prefix scan and cursor pagination. */
+    get: operations["list_objects"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/{bucket}/{key}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Download an object. Public objects are served without auth (and with
+     *     `Access-Control-Allow-Origin: *`); private objects require a valid bearer
+     *     token. Single-range requests (`Range: bytes=a-b`) return 206.
+     */
+    get: operations["get_object"];
+    /**
+     * Stream-upload an object. Honors `If-None-Match: *` and `If-Match: "<etag>"`
+     *     for conditional writes.
+     */
+    put: operations["put_object"];
+    /** Server-side copy from a source key in the same bucket. */
+    post: operations["copy_object"];
+    /** Delete an object. Idempotent. */
+    delete: operations["delete_object"];
+    options?: never;
+    /** Object metadata, identical headers to GET but no body. */
+    head: operations["head_object"];
+    /**
+     * Move (rename) an object or update its access level. Body is `{ "key": "..." }`,
+     *     `{ "access": "public"|"private" }`, or both.
+     */
+    patch: operations["patch_object"];
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: {
-        /** @description Bucket metadata. */
-        BucketResponse: {
-            /**
-             * @description Default access level for objects in this bucket.
-             * @example private
-             */
-            access: string;
-            /**
-             * @description Bucket name.
-             * @example photos
-             */
-            name: string;
-        };
-        /** @description Body for `POST /v1/{bucket}/{key}` (server-side copy). */
-        CopyObjectRequest: {
-            /**
-             * @description Source key within the same bucket. Cross-bucket copy is not yet supported.
-             * @example originals/u123.png
-             */
-            source: string;
-        };
-        /** @description Result of a successful server-side copy. */
-        CopyObjectResponse: {
-            /**
-             * @description Etag of the destination object (identical to the source's etag).
-             * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
-             */
-            etag: string;
-            /**
-             * @description Destination key.
-             * @example thumbnails/u123.png
-             */
-            key: string;
-        };
-        /** @description Body for `POST /v1/buckets`. */
-        CreateBucketRequest: {
-            /**
-             * @description Default access level inherited by objects in this bucket when an object
-             *     has no explicit `access` xattr. Defaults to `private`.
-             * @example private
-             */
-            access?: string;
-            /**
-             * @description Bucket name. Must be a single path segment (no slashes); cannot be the
-             *     reserved `default` literal — that bucket is auto-managed.
-             * @example photos
-             */
-            name: string;
-        };
-        /**
-         * @description Wire-format error body. The `code` field is the stable contract — clients
-         *     should switch on `code`, not on `message` (which is human-readable and may
-         *     change between versions).
-         */
-        ErrorBody: {
-            /**
-             * @description Machine-readable error code. One of: `unauthorized`, `forbidden`,
-             *     `object_not_found`, `bucket_not_found`, `bucket_not_empty`,
-             *     `object_exists`, `etag_mismatch`, `invalid_key`, `bad_request`,
-             *     `range_not_satisfiable`, `internal_error`.
-             * @example object_not_found
-             */
-            code: string;
-            /** @description Optional actionable guidance, when one is available. */
-            hint?: string | null;
-            /**
-             * @description Human-readable description. Suitable for logs and server-side debugging,
-             *     not for UI display.
-             * @example not found: photos/avatar.png
-             */
-            message: string;
-        };
-        /** @description Top-level error envelope returned on every non-2xx response. */
-        ErrorResponse: {
-            /** @description Error details. */
-            error: components["schemas"]["ErrorBody"];
-        };
-        /** @description Health check response. */
-        HealthzResponse: {
-            /**
-             * @description `"ok"` when both the data directory and the listing index are reachable;
-             *     `"degraded"` when one of them is not.
-             * @example ok
-             */
-            status: string;
-            /**
-             * @description Service version from `CARGO_PKG_VERSION` at compile time.
-             * @example 0.1.0
-             */
-            version: string;
-        };
-        /** @description Result of `GET /v1/buckets`. */
-        ListBucketsResponse: {
-            /** @description Buckets, sorted by name. */
-            buckets: components["schemas"]["BucketResponse"][];
-        };
-        /** @description Page of objects matching a list query. */
-        ListObjectsResponse: {
-            /**
-             * @description Opaque cursor to pass as `?cursor=` to fetch the next page. `null` when
-             *     the page is final.
-             * @example avatars/u123.png
-             */
-            next_cursor?: string | null;
-            /** @description Objects on this page, in ascending key order. */
-            objects: components["schemas"]["ObjectItem"][];
-        };
-        /** @description One entry in a list response. */
-        ObjectItem: {
-            /**
-             * @description Effective access level — the object's own xattr, falling back to the
-             *     bucket default when absent.
-             * @example private
-             */
-            access: string;
-            /**
-             * @description Stored `Content-Type`, when one was provided at upload time.
-             * @example image/png
-             */
-            content_type?: string | null;
-            /**
-             * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
-             * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
-             */
-            etag: string;
-            /**
-             * @description Object key (path within the bucket).
-             * @example avatars/u123.png
-             */
-            key: string;
-            /**
-             * Format: date-time
-             * @description Last-modified timestamp from the underlying file.
-             */
-            last_modified: string;
-            /**
-             * Format: int64
-             * @description Object size in bytes.
-             * @example 4096
-             */
-            size: number;
-            /**
-             * @description Absolute URL where the object can be fetched (uses `OBJECTS_URL` when set,
-             *     otherwise the bound address).
-             * @example https://objects.example.com/v1/photos/avatars/u123.png
-             */
-            url: string;
-        };
-        /** @description Body for `PATCH /v1/{bucket}/{key}`. At least one field must be set. */
-        PatchObjectRequest: {
-            /**
-             * @description New access level. When set, the object's visibility xattr is updated.
-             * @example public
-             */
-            access?: string | null;
-            /**
-             * @description New key path. When set, the object is moved within the bucket.
-             * @example archive/avatars/u123.png
-             */
-            key?: string | null;
-        };
-        /** @description Result of a successful upload, move, or access change. */
-        PutObjectResponse: {
-            /**
-             * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
-             * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
-             */
-            etag: string;
-            /**
-             * @description Final key of the object (post-move for PATCH, otherwise the request key).
-             * @example avatars/u123.png
-             */
-            key: string;
-            /**
-             * Format: int64
-             * @description Object size in bytes.
-             * @example 4096
-             */
-            size: number;
-        };
-        /** @description Body for `PATCH /v1/buckets/{name}`. */
-        UpdateBucketRequest: {
-            /**
-             * @description New default access level for objects in the bucket. Existing objects
-             *     keep their per-object xattr; only the inherited default changes.
-             * @example public
-             */
-            access: string;
-        };
+  schemas: {
+    /** @description Bucket metadata. */
+    BucketResponse: {
+      /**
+       * @description Default access level for objects in this bucket.
+       * @example private
+       */
+      access: string;
+      /**
+       * @description Bucket name.
+       * @example photos
+       */
+      name: string;
     };
-    responses: never;
-    parameters: never;
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    /** @description Body for `POST /v1/{bucket}/{key}` (server-side copy). */
+    CopyObjectRequest: {
+      /**
+       * @description Source key within the same bucket. Cross-bucket copy is not yet supported.
+       * @example originals/u123.png
+       */
+      source: string;
+    };
+    /** @description Result of a successful server-side copy. */
+    CopyObjectResponse: {
+      /**
+       * @description Etag of the destination object (identical to the source's etag).
+       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       */
+      etag: string;
+      /**
+       * @description Destination key.
+       * @example thumbnails/u123.png
+       */
+      key: string;
+    };
+    /** @description Body for `POST /v1/buckets`. */
+    CreateBucketRequest: {
+      /**
+       * @description Default access level inherited by objects in this bucket when an object
+       *     has no explicit `access` xattr. Defaults to `private`.
+       * @example private
+       */
+      access?: string;
+      /**
+       * @description Bucket name. Must be a single path segment (no slashes); cannot be the
+       *     reserved `default` literal — that bucket is auto-managed.
+       * @example photos
+       */
+      name: string;
+    };
+    /**
+     * @description Wire-format error body. The `code` field is the stable contract — clients
+     *     should switch on `code`, not on `message` (which is human-readable and may
+     *     change between versions).
+     */
+    ErrorBody: {
+      /**
+       * @description Machine-readable error code. One of: `unauthorized`, `forbidden`,
+       *     `object_not_found`, `bucket_not_found`, `bucket_not_empty`,
+       *     `object_exists`, `etag_mismatch`, `invalid_key`, `bad_request`,
+       *     `range_not_satisfiable`, `internal_error`.
+       * @example object_not_found
+       */
+      code: string;
+      /** @description Optional actionable guidance, when one is available. */
+      hint?: string | null;
+      /**
+       * @description Human-readable description. Suitable for logs and server-side debugging,
+       *     not for UI display.
+       * @example not found: photos/avatar.png
+       */
+      message: string;
+    };
+    /** @description Top-level error envelope returned on every non-2xx response. */
+    ErrorResponse: {
+      /** @description Error details. */
+      error: components["schemas"]["ErrorBody"];
+    };
+    /** @description Health check response. */
+    HealthzResponse: {
+      /**
+       * @description `"ok"` when both the data directory and the listing index are reachable;
+       *     `"degraded"` when one of them is not.
+       * @example ok
+       */
+      status: string;
+      /**
+       * @description Service version from `CARGO_PKG_VERSION` at compile time.
+       * @example 0.1.0
+       */
+      version: string;
+    };
+    /** @description Result of `GET /v1/buckets`. */
+    ListBucketsResponse: {
+      /** @description Buckets, sorted by name. */
+      buckets: components["schemas"]["BucketResponse"][];
+    };
+    /** @description Page of objects matching a list query. */
+    ListObjectsResponse: {
+      /**
+       * @description Opaque cursor to pass as `?cursor=` to fetch the next page. `null` when
+       *     the page is final.
+       * @example avatars/u123.png
+       */
+      next_cursor?: string | null;
+      /** @description Objects on this page, in ascending key order. */
+      objects: components["schemas"]["ObjectItem"][];
+    };
+    /** @description One entry in a list response. */
+    ObjectItem: {
+      /**
+       * @description Effective access level — the object's own xattr, falling back to the
+       *     bucket default when absent.
+       * @example private
+       */
+      access: string;
+      /**
+       * @description Stored `Content-Type`, when one was provided at upload time.
+       * @example image/png
+       */
+      content_type?: string | null;
+      /**
+       * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
+       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       */
+      etag: string;
+      /**
+       * @description Object key (path within the bucket).
+       * @example avatars/u123.png
+       */
+      key: string;
+      /**
+       * Format: date-time
+       * @description Last-modified timestamp from the underlying file.
+       */
+      last_modified: string;
+      /**
+       * Format: int64
+       * @description Object size in bytes.
+       * @example 4096
+       */
+      size: number;
+      /**
+       * @description Absolute URL where the object can be fetched (uses `OBJECTS_URL` when set,
+       *     otherwise the bound address).
+       * @example https://objects.example.com/v1/photos/avatars/u123.png
+       */
+      url: string;
+    };
+    /** @description Body for `PATCH /v1/{bucket}/{key}`. At least one field must be set. */
+    PatchObjectRequest: {
+      /**
+       * @description New access level. When set, the object's visibility xattr is updated.
+       * @example public
+       */
+      access?: string | null;
+      /**
+       * @description New key path. When set, the object is moved within the bucket.
+       * @example archive/avatars/u123.png
+       */
+      key?: string | null;
+    };
+    /** @description Result of a successful upload, move, or access change. */
+    PutObjectResponse: {
+      /**
+       * @description Strong entity tag (quoted hex BLAKE3 of the object bytes).
+       * @example "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+       */
+      etag: string;
+      /**
+       * @description Final key of the object (post-move for PATCH, otherwise the request key).
+       * @example avatars/u123.png
+       */
+      key: string;
+      /**
+       * Format: int64
+       * @description Object size in bytes.
+       * @example 4096
+       */
+      size: number;
+    };
+    /** @description Body for `PATCH /v1/buckets/{name}`. */
+    UpdateBucketRequest: {
+      /**
+       * @description New default access level for objects in the bucket. Existing objects
+       *     keep their per-object xattr; only the inherited default changes.
+       * @example public
+       */
+      access: string;
+    };
+  };
+  responses: never;
+  parameters: never;
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    healthz: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Healthy: data directory and listing index are reachable. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthzResponse"];
-                };
-            };
-            /** @description Degraded: data directory or listing index is unreachable. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthzResponse"];
-                };
-            };
-        };
+  livez: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    list_buckets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Process is alive. */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description All buckets, sorted by name. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListBucketsResponse"];
-                };
-            };
-            /** @description Missing or invalid root token. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["HealthzResponse"];
         };
+      };
     };
-    create_bucket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateBucketRequest"];
-            };
-        };
-        responses: {
-            /** @description Bucket created (or already existed with the same access level). */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BucketResponse"];
-                };
-            };
-            /** @description Bucket name is invalid (contains `/`, is empty, or is the reserved `default`). */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Missing or invalid root token. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  readyz: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    get_bucket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                name: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Ready: data directory and listing index are reachable. */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Bucket metadata. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BucketResponse"];
-                };
-            };
-            /** @description Missing or invalid root token. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Bucket does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["HealthzResponse"];
         };
+      };
+      /** @description Degraded: data directory or listing index is unreachable. */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HealthzResponse"];
+        };
+      };
     };
-    delete_bucket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bucket deleted, or did not exist (idempotent). */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid root token. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Bucket still contains objects — delete them first. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  list_buckets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    update_bucket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                name: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description All buckets, sorted by name. */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateBucketRequest"];
-            };
+        content: {
+          "application/json": components["schemas"]["ListBucketsResponse"];
         };
-        responses: {
-            /** @description Updated bucket metadata. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BucketResponse"];
-                };
-            };
-            /** @description Missing or invalid root token. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Bucket does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+      };
+      /** @description Missing or invalid root token. */
+      401: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    list_objects: {
-        parameters: {
-            query?: {
-                /** @description Only return keys with this prefix. */
-                prefix?: string;
-                /** @description Last key of the previous page (exclusive). */
-                cursor?: string;
-                /** @description Max keys per page (default 1000, max 1000). */
-                limit?: number;
-            };
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Page of objects, in ascending key order. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListObjectsResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token for this bucket. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  create_bucket: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    get_object: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description Single byte range, e.g. `bytes=0-1023`. */
-                Range?: string | null;
-            };
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Object key. */
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Full object bytes. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": unknown;
-                };
-            };
-            /** @description Single-range partial content. */
-            206: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/octet-stream": unknown;
-                };
-            };
-            /** @description Object is private and no valid bearer token was presented. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Object does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Range header is malformed, multi-range, or outside the object size. */
-            416: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreateBucketRequest"];
+      };
     };
-    put_object: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @description MIME type stored alongside the object. */
-                "Content-Type"?: string | null;
-                /** @description Set to `*` to write only when the object does not exist. */
-                "If-None-Match"?: string | null;
-                /** @description Quoted etag — write only when the current etag matches. */
-                "If-Match"?: string | null;
-                /** @description `public` or `private` — overrides the bucket default. */
-                "X-Beyond-Access"?: string | null;
-            };
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Object key (may contain slashes). */
-                key: string;
-            };
-            cookie?: never;
+    responses: {
+      /** @description Bucket created (or already existed with the same access level). */
+      201: {
+        headers: {
+          [name: string]: unknown;
         };
-        /** @description Raw object bytes (streamed). */
-        requestBody?: {
-            content: {
-                "application/octet-stream": unknown;
-            };
+        content: {
+          "application/json": components["schemas"]["BucketResponse"];
         };
-        responses: {
-            /** @description Object written. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PutObjectResponse"];
-                };
-            };
-            /** @description Conflicting or malformed conditional headers. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token for this bucket. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Conditional write failed (`If-None-Match` matched, or `If-Match` etag did not). */
-            412: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+      };
+      /** @description Bucket name is invalid (contains `/`, is empty, or is the reserved `default`). */
+      400: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Missing or invalid root token. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    copy_object: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Destination key. */
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CopyObjectRequest"];
-            };
-        };
-        responses: {
-            /** @description Destination object created. */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopyObjectResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token for this bucket. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Source object does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  get_bucket: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        name: string;
+      };
+      cookie?: never;
     };
-    delete_object: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Object key. */
-                key: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Bucket metadata. */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Object deleted, or did not exist (idempotent). */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid bearer token for this bucket. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["BucketResponse"];
         };
+      };
+      /** @description Missing or invalid root token. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bucket does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    head_object: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Object key. */
-                key: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Object metadata in headers (no body). */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Object is private and no valid bearer token was presented. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Object does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  delete_bucket: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        name: string;
+      };
+      cookie?: never;
     };
-    patch_object: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Bucket name. */
-                bucket: string;
-                /** @description Object key. */
-                key: string;
-            };
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Bucket deleted, or did not exist (idempotent). */
+      204: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PatchObjectRequest"];
-            };
+        content?: never;
+      };
+      /** @description Missing or invalid root token. */
+      401: {
+        headers: {
+          [name: string]: unknown;
         };
-        responses: {
-            /** @description Updated metadata after the move and/or access change. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PutObjectResponse"];
-                };
-            };
-            /** @description Body did not contain `key` or `access`. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Missing or invalid bearer token for this bucket. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Source object does not exist. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
+      };
+      /** @description Bucket still contains objects — delete them first. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
+  };
+  update_bucket: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        name: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["UpdateBucketRequest"];
+      };
+    };
+    responses: {
+      /** @description Updated bucket metadata. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BucketResponse"];
+        };
+      };
+      /** @description Missing or invalid root token. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bucket does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  list_objects: {
+    parameters: {
+      query?: {
+        /** @description Only return keys with this prefix. */
+        prefix?: string;
+        /** @description Last key of the previous page (exclusive). */
+        cursor?: string;
+        /** @description Max keys per page (default 1000, max 1000). */
+        limit?: number;
+      };
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Page of objects, in ascending key order. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ListObjectsResponse"];
+        };
+      };
+      /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  get_object: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description Single byte range, e.g. `bytes=0-1023`. */
+        Range?: string | null;
+      };
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Object key. */
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Full object bytes. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/octet-stream": unknown;
+        };
+      };
+      /** @description Single-range partial content. */
+      206: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/octet-stream": unknown;
+        };
+      };
+      /** @description Object is private and no valid bearer token was presented. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Object does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Range header is malformed, multi-range, or outside the object size. */
+      416: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  put_object: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description MIME type stored alongside the object. */
+        "Content-Type"?: string | null;
+        /** @description Set to `*` to write only when the object does not exist. */
+        "If-None-Match"?: string | null;
+        /** @description Quoted etag — write only when the current etag matches. */
+        "If-Match"?: string | null;
+        /** @description `public` or `private` — overrides the bucket default. */
+        "X-Beyond-Access"?: string | null;
+      };
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Object key (may contain slashes). */
+        key: string;
+      };
+      cookie?: never;
+    };
+    /** @description Raw object bytes (streamed). */
+    requestBody?: {
+      content: {
+        "application/octet-stream": unknown;
+      };
+    };
+    responses: {
+      /** @description Object written. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PutObjectResponse"];
+        };
+      };
+      /** @description Conflicting or malformed conditional headers. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conditional write failed (`If-None-Match` matched, or `If-Match` etag did not). */
+      412: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  copy_object: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Destination key. */
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CopyObjectRequest"];
+      };
+    };
+    responses: {
+      /** @description Destination object created. */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CopyObjectResponse"];
+        };
+      };
+      /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source object does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  delete_object: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Object key. */
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Object deleted, or did not exist (idempotent). */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  head_object: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Object key. */
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Object metadata in headers (no body). */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Object is private and no valid bearer token was presented. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Object does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  patch_object: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Bucket name. */
+        bucket: string;
+        /** @description Object key. */
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PatchObjectRequest"];
+      };
+    };
+    responses: {
+      /** @description Updated metadata after the move and/or access change. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PutObjectResponse"];
+        };
+      };
+      /** @description Body did not contain `key` or `access`. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Missing or invalid bearer token for this bucket. */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source object does not exist. */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
 }

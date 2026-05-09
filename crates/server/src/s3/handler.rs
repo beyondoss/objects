@@ -7,7 +7,7 @@
 //! protocol surfaces share storage, index, and the `publish` event hook.
 
 use std::collections::{BTreeSet, HashMap};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use axum::http::StatusCode;
 use futures::TryStreamExt;
@@ -169,12 +169,23 @@ impl S3 for ObjectsS3 {
         let stream = body.map_err(std::io::Error::other);
         let mut reader = StreamReader::new(stream);
 
-        let (etag, _size) = self
+        let t = Instant::now();
+        let (etag, size) = self
             .state
             .storage
             .write_object(&bucket, &key, &mut reader, meta, condition)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["write"])
+            .observe(t.elapsed().as_secs_f64());
+        self.state
+            .metrics
+            .bytes_uploaded_total
+            .with_label_values(&[&bucket])
+            .inc_by(size as f64);
 
         let idx = self.state.index.clone();
         let bucket_owned = bucket.clone();
@@ -202,12 +213,18 @@ impl S3 for ObjectsS3 {
         let bucket = input.bucket;
         let key = input.key;
 
+        let t = Instant::now();
         let (info, file) = self
             .state
             .storage
             .open_object(&bucket, &key)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["read"])
+            .observe(t.elapsed().as_secs_f64());
 
         enforce_anonymous_visibility(authenticated, info.access)?;
 
@@ -236,20 +253,32 @@ impl S3 for ObjectsS3 {
             None => (0, info.size),
         };
         let length = end.saturating_sub(start);
+        self.state
+            .metrics
+            .bytes_downloaded_total
+            .with_label_values(&[&bucket])
+            .inc_by(length as f64);
 
         let body = if length == 0 {
             StreamingBlob::wrap(futures::stream::empty::<std::io::Result<bytes::Bytes>>())
         } else {
             let file_std = file.into_std().await;
             let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
-                // SAFETY: objects are immutable after write; no concurrent mutation.
+                // SAFETY: Objects are write-once-by-rename (no in-place mutation ever
+                // occurs). `delete_object` and `move_object` use `unlink`/`rename`; on
+                // Linux and macOS these never invalidate a live `Mmap` — the inode is
+                // reference-counted by the OS and persists until all fds and mappings
+                // are released. `file_std` pins the inode through mmap creation;
+                // dropping it afterward is safe because `Mmap` holds the reference
+                // independently of the fd.
                 let mmap = unsafe {
                     memmap2::MmapOptions::new()
                         .offset(start)
                         .len(length as usize)
                         .map(&file_std)?
                 };
-                Ok(bytes::Bytes::copy_from_slice(&mmap))
+                drop(file_std);
+                Ok(bytes::Bytes::from_owner(mmap))
             })
             .await
             .map_err(|e| s3_error!(InternalError, "read task: {e}"))?
@@ -284,12 +313,18 @@ impl S3 for ObjectsS3 {
     ) -> S3Result<S3Response<HeadObjectOutput>> {
         let authenticated = req.credentials.is_some();
         let input = req.input;
+        let t = Instant::now();
         let info = self
             .state
             .storage
             .head_object(&input.bucket, &input.key)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["head"])
+            .observe(t.elapsed().as_secs_f64());
 
         enforce_anonymous_visibility(authenticated, info.access)?;
 
@@ -330,7 +365,14 @@ impl S3 for ObjectsS3 {
 
         // Mirror the REST handler's failure ordering: storage first, then
         // index. Reconcile heals any gap on next startup.
-        match self.state.storage.delete_object(&bucket, &key).await {
+        let t = Instant::now();
+        let delete_result = self.state.storage.delete_object(&bucket, &key).await;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["delete"])
+            .observe(t.elapsed().as_secs_f64());
+        match delete_result {
             Ok(()) => {
                 let idx = self.state.index.clone();
                 let b = bucket.clone();
@@ -379,12 +421,18 @@ impl S3 for ObjectsS3 {
             }
         };
 
+        let t = Instant::now();
         let etag = self
             .state
             .storage
             .copy_object(&src_bucket, &src_key, &dst_bucket, &dst_key)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["copy"])
+            .observe(t.elapsed().as_secs_f64());
 
         let idx = self.state.index.clone();
         let b = dst_bucket.clone();
@@ -496,12 +544,19 @@ impl S3 for ObjectsS3 {
             user_metadata,
         };
 
+        let t = Instant::now();
         let upload_id = self
             .state
             .storage
             .init_multipart(&bucket, &key, meta)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["initiate_multipart"])
+            .observe(t.elapsed().as_secs_f64());
+        self.state.metrics.multipart_uploads_active.inc();
 
         Ok(S3Response::new(CreateMultipartUploadOutput {
             bucket: Some(bucket),
@@ -525,12 +580,18 @@ impl S3 for ObjectsS3 {
         let part_number = u32::try_from(input.part_number)
             .map_err(|_| s3_error!(InvalidArgument, "part number out of range"))?;
 
+        let t = Instant::now();
         let etag = self
             .state
             .storage
             .write_part(&input.upload_id, part_number, &mut reader)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["upload_part"])
+            .observe(t.elapsed().as_secs_f64());
 
         Ok(S3Response::new(UploadPartOutput {
             e_tag: Some(etag_to_dto(&etag)),
@@ -568,12 +629,24 @@ impl S3 for ObjectsS3 {
             })
             .collect::<S3Result<Vec<_>>>()?;
 
+        let t = Instant::now();
         let (final_etag, _size) = self
             .state
             .storage
             .complete_multipart(&upload_id, &parts_in)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["complete_multipart"])
+            .observe(t.elapsed().as_secs_f64());
+        self.state.metrics.multipart_uploads_active.dec();
+        self.state
+            .metrics
+            .multipart_uploads_total
+            .with_label_values(&["completed"])
+            .inc();
 
         let idx = self.state.index.clone();
         let b = bucket.clone();
@@ -598,11 +671,23 @@ impl S3 for ObjectsS3 {
         &self,
         req: S3Request<AbortMultipartUploadInput>,
     ) -> S3Result<S3Response<AbortMultipartUploadOutput>> {
+        let t = Instant::now();
         self.state
             .storage
             .abort_multipart(&req.input.upload_id)
             .await
             .map_err(from_storage)?;
+        self.state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["abort_multipart"])
+            .observe(t.elapsed().as_secs_f64());
+        self.state.metrics.multipart_uploads_active.dec();
+        self.state
+            .metrics
+            .multipart_uploads_total
+            .with_label_values(&["aborted"])
+            .inc();
         Ok(S3Response::new(AbortMultipartUploadOutput::default()))
     }
 

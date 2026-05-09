@@ -23,7 +23,7 @@ use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::TraceLayer,
+    trace::{MakeSpan, TraceLayer},
 };
 use utoipa::OpenApi;
 use uuid::Uuid;
@@ -143,6 +143,31 @@ pub struct ListPage {
     pub next_cursor: Option<String>,
 }
 
+/// Propagates W3C trace context (`traceparent`/`tracestate`) from incoming
+/// requests so spans are children of the caller's trace, not fresh roots.
+#[derive(Clone, Default)]
+struct OtelMakeSpan;
+
+impl<B> MakeSpan<B> for OtelMakeSpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+        let span = tracing::info_span!(
+            "HTTP request",
+            http.method = %request.method(),
+            http.uri = %request.uri(),
+            http.version = ?request.version(),
+            otel.kind = "server",
+            http.status_code = tracing::field::Empty,
+            bucket = tracing::field::Empty,
+            key = tracing::field::Empty,
+        );
+        let parent_cx = telemetry::extract_trace_context(request.headers());
+        let _ = span.set_parent(parent_cx);
+        span
+    }
+}
+
 #[derive(Clone)]
 struct MakeRequestUuid;
 
@@ -153,13 +178,13 @@ impl MakeRequestId for MakeRequestUuid {
     }
 }
 
-/// Build the full router. Public routes (`/healthz`, `/v1/openapi.json`)
+/// Build the full router. Public routes (`/livez`, `/readyz`, `/v1/openapi.json`)
 /// sit outside the auth boundary; per-resource auth is applied inside
 /// `routes::router`. The `/metrics` endpoint lives on a separate internal-only
 /// listener built via `build_metrics_router`.
 ///
 /// The S3-compatible surface is mounted as `fallback_service` so that explicit
-/// `/v1/*`, `/healthz`, and `/v1/openapi.json` routes always win. Any
+/// `/v1/*`, `/livez`, `/readyz`, and `/v1/openapi.json` routes always win. Any
 /// unmatched URL (e.g. `GET /` for `ListBuckets`, `PUT /{bucket}/{key}` for
 /// `PutObject`) is handed to s3s.
 pub fn build_router(state: AppState) -> Router {
@@ -174,7 +199,8 @@ pub fn build_router(state: AppState) -> Router {
                 async move { Json(openapi) }
             }),
         )
-        .route("/healthz", get(routes::healthz::handler))
+        .route("/livez", get(routes::healthz::livez))
+        .route("/readyz", get(routes::healthz::readyz))
         .with_state(state.clone())
         .fallback_service(
             ServiceBuilder::new()
@@ -187,7 +213,7 @@ pub fn build_router(state: AppState) -> Router {
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(PropagateRequestIdLayer::x_request_id())
-                .layer(TraceLayer::new_for_http())
+                .layer(TraceLayer::new_for_http().make_span_with(OtelMakeSpan))
                 .layer(CatchPanicLayer::new()),
         )
 }
@@ -201,12 +227,16 @@ pub fn build_metrics_router(state: AppState) -> Router {
 }
 
 async fn record_metrics(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    state.metrics.http_connections_active.inc();
     let method = req.method().clone();
+    // Fallback to "<unmatched>" — not the raw URI — to avoid unbounded label
+    // cardinality from S3 requests that hit the fallback_service (which sets
+    // no MatchedPath) with arbitrary bucket/key paths.
     let path = req
         .extensions()
         .get::<MatchedPath>()
         .map(|m| m.as_str().to_string())
-        .unwrap_or_else(|| req.uri().path().to_string());
+        .unwrap_or_else(|| "<unmatched>".to_string());
     let timer = state
         .metrics
         .http_request_duration_seconds
@@ -215,6 +245,7 @@ async fn record_metrics(State(state): State<AppState>, req: Request, next: Next)
 
     let response = next.run(req).await;
 
+    state.metrics.http_connections_active.dec();
     let status = response.status().as_u16().to_string();
     state
         .metrics
@@ -229,18 +260,26 @@ async fn record_metrics(State(state): State<AppState>, req: Request, next: Next)
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     (
         axum::http::StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         state.metrics.encode(),
     )
         .into_response()
 }
 
 pub async fn serve(config: Config) -> Result<()> {
+    // Validate LOG_LEVEL before initializing telemetry so we get a clear error
+    // on misconfiguration rather than silently falling back to the default.
+    tracing_subscriber::EnvFilter::try_new(&config.log_level)
+        .map_err(|e| anyhow::anyhow!("invalid LOG_LEVEL {:?}: {e}", config.log_level))?;
+
     let otel_config = telemetry::OtelConfig {
         enabled: config.otlp_enabled,
         otlp_endpoint: config.otlp_endpoint.clone(),
         service_name: "beyond-objects".into(),
-        sample_rate: 1.0,
+        sample_rate: config.otlp_sample_rate,
     };
     let _otel_guard = telemetry::init(&otel_config, vec![], &config.log_level)?;
 
@@ -267,13 +306,44 @@ pub async fn serve(config: Config) -> Result<()> {
     {
         let idx = index.clone();
         let data_dir = config.data_dir.clone();
-        tokio::task::spawn_blocking(move || idx.reconcile(&data_dir))
+        tracing::info!("starting index reconcile");
+        let reconcile_start = std::time::Instant::now();
+        let stats = tokio::task::spawn_blocking(move || idx.reconcile(&data_dir))
             .await
             .map_err(|e| anyhow::anyhow!("reconcile join: {e}"))??;
+        let elapsed_ms = reconcile_start.elapsed().as_millis();
+        if stats.inserted > 0 || stats.removed > 0 {
+            tracing::warn!(
+                elapsed_ms,
+                recovered = stats.inserted,
+                removed = stats.removed,
+                "startup reconcile recovered objects missing from index — prior instance may have crashed mid-write"
+            );
+        } else {
+            tracing::info!(elapsed_ms, "startup reconcile complete, index consistent");
+        }
+    }
+
+    // GC orphaned temp files and stale multipart uploads left by prior crashes.
+    // Runs after reconcile so the index is consistent before we clean storage.
+    match storage
+        .gc_temp_files(std::time::Duration::from_secs(config.gc_temp_ttl_secs))
+        .await
+    {
+        Ok(0) | Ok(_) => {}
+        Err(e) => tracing::warn!(err = %e, "startup gc_temp_files failed"),
+    }
+    match storage
+        .gc_multipart_uploads(std::time::Duration::from_secs(config.gc_multipart_ttl_secs))
+        .await
+    {
+        Ok(0) | Ok(_) => {}
+        Err(e) => tracing::warn!(err = %e, "startup gc_multipart_uploads failed"),
     }
 
     let address = config.address.clone();
     let metrics_address = config.metrics_address.clone();
+    let drain_timeout_secs = config.drain_timeout_secs;
     let state = AppState {
         config: Arc::new(config),
         storage,
@@ -288,13 +358,38 @@ pub async fn serve(config: Config) -> Result<()> {
 
     let metrics_listener = tokio::net::TcpListener::bind(&metrics_address).await?;
     tracing::info!(address = %metrics_address, "metrics listening");
-    tokio::spawn(async move {
-        axum::serve(metrics_listener, metrics_app).await.ok();
+    let metrics_task = tokio::spawn(async move {
+        if let Err(e) = axum::serve(metrics_listener, metrics_app).await {
+            tracing::error!(err = %e, "metrics server exited");
+        }
     });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Pair a oneshot with the shutdown future so we can start the drain timer
+    // only after the signal fires, not from process start.
+    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+        shutdown_signal().await;
+        signal_tx.send(()).ok();
+    });
+
+    if drain_timeout_secs > 0 {
+        tokio::select! {
+            result = serve => { result?; }
+            _ = async move {
+                if signal_rx.await.is_ok() {
+                    tokio::time::sleep(std::time::Duration::from_secs(drain_timeout_secs)).await;
+                    tracing::warn!(
+                        drain_timeout_secs,
+                        "drain timeout exceeded, forcing shutdown"
+                    );
+                }
+            } => {}
+        }
+    } else {
+        serve.await?;
+    }
+
+    metrics_task.abort();
     Ok(())
 }
 

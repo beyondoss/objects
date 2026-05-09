@@ -51,6 +51,30 @@ pub struct Config {
     /// request).
     #[arg(long, env = "SYNC_LINGER_MS", default_value = "5")]
     pub sync_linger_ms: u64,
+
+    /// Maximum seconds to wait for in-flight requests to drain after a shutdown
+    /// signal before forcing exit. Set to 0 to drain indefinitely (rely on
+    /// systemd `TimeoutStopSec` or Kubernetes `terminationGracePeriodSeconds`).
+    #[arg(long, env = "DRAIN_TIMEOUT_SECS", default_value_t = 30)]
+    pub drain_timeout_secs: u64,
+
+    /// OTLP trace sample rate (0.0 = never, 1.0 = always, 0.1 = 10%).
+    /// Only effective when OTLP_ENABLED=true.
+    #[arg(long, env = "OTLP_SAMPLE_RATE", default_value_t = 1.0)]
+    pub otlp_sample_rate: f64,
+
+    /// Minimum age in seconds for orphaned temp files (`.tmp/` directory) to be
+    /// eligible for GC at startup. Files younger than this threshold are assumed
+    /// to belong to an in-flight upload from a previous process and are skipped.
+    #[arg(long, env = "GC_TEMP_TTL_SECS", default_value_t = 3600)]
+    pub gc_temp_ttl_secs: u64,
+
+    /// Minimum age in seconds for an incomplete multipart upload to be eligible
+    /// for GC at startup. Sessions older than this threshold are assumed
+    /// abandoned and will be deleted. Increase if your workload includes
+    /// multi-hour uploads of very large objects.
+    #[arg(long, env = "GC_MULTIPART_TTL_SECS", default_value_t = 86400)]
+    pub gc_multipart_ttl_secs: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -66,6 +90,10 @@ impl std::fmt::Debug for Config {
             .field("otlp_endpoint", &self.otlp_endpoint)
             .field("public_url", &self.public_url)
             .field("sync_linger_ms", &self.sync_linger_ms)
+            .field("drain_timeout_secs", &self.drain_timeout_secs)
+            .field("otlp_sample_rate", &self.otlp_sample_rate)
+            .field("gc_temp_ttl_secs", &self.gc_temp_ttl_secs)
+            .field("gc_multipart_ttl_secs", &self.gc_multipart_ttl_secs)
             .finish()
     }
 }

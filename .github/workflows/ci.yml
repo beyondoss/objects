@@ -29,6 +29,8 @@ jobs:
         run: mise run build:ts
       - name: test:integration:ts
         run: mise run test:integration:ts
+      - name: check:bench
+        run: cargo bench --no-run
       - name: audit
         run: |
           cargo install cargo-audit --quiet

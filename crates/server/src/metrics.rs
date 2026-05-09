@@ -118,5 +118,20 @@ define_metrics! {
         histogram_vec http_request_duration_seconds("http_request_duration_seconds")["method", "path"]
             buckets = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]
             => "HTTP request duration in seconds",
+        gauge http_connections_active("http_connections_active")
+            => "Number of HTTP requests currently in flight",
+        // op label: write | read | head | delete | copy | move | initiate_multipart | upload_part | complete_multipart | abort_multipart
+        histogram_vec storage_operation_seconds("storage_operation_seconds")["op"]
+            buckets = [0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0]
+            => "Storage operation duration in seconds",
+        // outcome label: completed | aborted
+        counter_vec bytes_uploaded_total("bytes_uploaded_total")["bucket"]
+            => "Total bytes uploaded to the object store",
+        counter_vec bytes_downloaded_total("bytes_downloaded_total")["bucket"]
+            => "Total bytes downloaded from the object store",
+        gauge multipart_uploads_active("multipart_uploads_active")
+            => "Multipart upload sessions currently in progress",
+        counter_vec multipart_uploads_total("multipart_uploads_total")["outcome"]
+            => "Multipart upload sessions that reached a terminal state (completed or aborted)",
     }
 }

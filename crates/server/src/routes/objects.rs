@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use std::time::Instant;
 
 use axum::{
     Json,
@@ -27,8 +28,8 @@ pub struct PutObjectResponse {
     /// Final key of the object (post-move for PATCH, otherwise the request key).
     #[schema(example = "avatars/u123.png")]
     pub key: String,
-    /// Strong entity tag (quoted hex BLAKE3 of the object bytes).
-    #[schema(example = "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\"")]
+    /// Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).
+    #[schema(example = "\"5d41402abc4b2a76b9719d911017c592\"")]
     pub etag: String,
     /// Object size in bytes.
     #[schema(example = 4096)]
@@ -44,8 +45,8 @@ pub struct ObjectItem {
     /// Object size in bytes.
     #[schema(example = 4096)]
     pub size: u64,
-    /// Strong entity tag (quoted hex BLAKE3 of the object bytes).
-    #[schema(example = "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\"")]
+    /// Quoted MD5 hex digest of the object bytes (S3-compatible ETag format).
+    #[schema(example = "\"5d41402abc4b2a76b9719d911017c592\"")]
     pub etag: String,
     /// Stored `Content-Type`, when one was provided at upload time.
     #[schema(nullable, example = "image/png")]
@@ -112,8 +113,8 @@ pub struct CopyObjectResponse {
     /// Destination key.
     #[schema(example = "thumbnails/u123.png")]
     pub key: String,
-    /// Etag of the destination object (identical to the source's etag).
-    #[schema(example = "\"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35\"")]
+    /// Quoted MD5 hex digest of the destination object (identical to the source's etag).
+    #[schema(example = "\"5d41402abc4b2a76b9719d911017c592\"")]
     pub etag: String,
 }
 
@@ -150,6 +151,10 @@ pub async fn put_object(
     headers: HeaderMap,
     request: Request,
 ) -> Result<impl IntoResponse, ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
     let condition = parse_condition(&headers)?;
     let content_type = header_str(&headers, header::CONTENT_TYPE).map(str::to_owned);
     let access = parse_access_header(&headers)?;
@@ -167,10 +172,21 @@ pub async fn put_object(
         user_metadata,
     };
 
+    let t = Instant::now();
     let (etag, size) = state
         .storage
         .write_object(&bucket, &key, &mut reader, meta, condition)
         .await?;
+    state
+        .metrics
+        .storage_operation_seconds
+        .with_label_values(&["write"])
+        .observe(t.elapsed().as_secs_f64());
+    state
+        .metrics
+        .bytes_uploaded_total
+        .with_label_values(&[&bucket])
+        .inc_by(size as f64);
 
     state.index_insert(&bucket, &key).await?;
     state.publish(&state.config.base_url(), &bucket, &key);
@@ -216,7 +232,17 @@ pub async fn get_object(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
+    let t = Instant::now();
     let (info, file) = state.storage.open_object(&bucket, &key).await?;
+    state
+        .metrics
+        .storage_operation_seconds
+        .with_label_values(&["read"])
+        .observe(t.elapsed().as_secs_f64());
     enforce_object_auth(&state, &bucket, &info.access, &headers)?;
 
     let mut resp_headers = build_object_headers(&info);
@@ -240,6 +266,11 @@ pub async fn get_object(
         HeaderValue::from_str(&length.to_string())
             .map_err(|_| ApiError::Internal(anyhow::anyhow!("content-length encode")))?,
     );
+    state
+        .metrics
+        .bytes_downloaded_total
+        .with_label_values(&[&bucket])
+        .inc_by(length as f64);
 
     // mmap the requested byte range in a single spawn_blocking: one context
     // switch for any object size. tokio::fs::File serializes each poll_read
@@ -251,14 +282,21 @@ pub async fn get_object(
     } else {
         let file_std = file.into_std().await;
         let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
-            // SAFETY: objects are immutable after write; no concurrent mutation.
+            // SAFETY: Objects are write-once-by-rename (no in-place mutation ever
+            // occurs). `delete_object` and `move_object` use `unlink`/`rename`; on
+            // Linux and macOS these never invalidate a live `Mmap` — the inode is
+            // reference-counted by the OS and persists until all fds and mappings
+            // are released. `file_std` pins the inode through mmap creation;
+            // dropping it afterward is safe because `Mmap` holds the reference
+            // independently of the fd.
             let mmap = unsafe {
                 memmap2::MmapOptions::new()
                     .offset(start)
                     .len(length as usize)
                     .map(&file_std)?
             };
-            Ok(bytes::Bytes::copy_from_slice(&mmap))
+            drop(file_std);
+            Ok(bytes::Bytes::from_owner(mmap))
         })
         .await
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("read task: {e}")))?
@@ -291,7 +329,17 @@ pub async fn head_object(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
+    let t = Instant::now();
     let info = state.storage.head_object(&bucket, &key).await?;
+    state
+        .metrics
+        .storage_operation_seconds
+        .with_label_values(&["head"])
+        .observe(t.elapsed().as_secs_f64());
     enforce_object_auth(&state, &bucket, &info.access, &headers)?;
 
     let mut resp_headers = build_object_headers(&info);
@@ -323,10 +371,21 @@ pub async fn delete_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
     // Failure ordering: if storage delete succeeds but index delete fails, the object
     // is gone from disk but still appears in listings. Reconcile on the next startup
     // drops index entries with no backing file, recovering this state.
-    match state.storage.delete_object(&bucket, &key).await {
+    let t = Instant::now();
+    let delete_result = state.storage.delete_object(&bucket, &key).await;
+    state
+        .metrics
+        .storage_operation_seconds
+        .with_label_values(&["delete"])
+        .observe(t.elapsed().as_secs_f64());
+    match delete_result {
         Ok(()) => state.index_delete(&bucket, &key).await?,
         Err(StorageError::NotFound { .. }) => {
             // Already gone — idempotent. Best-effort index cleanup; reconcile handles gaps.
@@ -364,6 +423,10 @@ pub async fn patch_object(
     Path((bucket, key)): Path<(String, String)>,
     Json(req): Json<PatchObjectRequest>,
 ) -> Result<Json<PutObjectResponse>, ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
     if req.key.is_none() && req.access.is_none() {
         return Err(ApiError::bad_request("body must contain `key` or `access`"));
     }
@@ -379,10 +442,16 @@ pub async fn patch_object(
         //   delete fails  → both keys in index, file at new path; reconcile
         //                   drops the stale old entry (no backing file)
         state.index_insert(&bucket, new_key).await?;
+        let t = Instant::now();
         state
             .storage
             .move_object(&bucket, &key, &bucket, new_key)
             .await?;
+        state
+            .metrics
+            .storage_operation_seconds
+            .with_label_values(&["move"])
+            .observe(t.elapsed().as_secs_f64());
         state.index_delete(&bucket, &key).await?;
         current_key = new_key.clone();
     }
@@ -425,10 +494,20 @@ pub async fn copy_object(
     Path((bucket, key)): Path<(String, String)>,
     Json(req): Json<CopyObjectRequest>,
 ) -> Result<(StatusCode, Json<CopyObjectResponse>), ApiError> {
+    let span = tracing::Span::current();
+    span.record("bucket", bucket.as_str());
+    span.record("key", key.as_str());
+
+    let t = Instant::now();
     let etag = state
         .storage
         .copy_object(&bucket, &req.source, &bucket, &key)
         .await?;
+    state
+        .metrics
+        .storage_operation_seconds
+        .with_label_values(&["copy"])
+        .observe(t.elapsed().as_secs_f64());
     // If index_insert fails here the object exists on disk but won't appear in listings
     // until reconcile repairs the gap on next startup. The file itself is accessible by
     // direct key — no cleanup needed.
@@ -459,6 +538,8 @@ pub async fn list_objects(
     Path(bucket): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ListObjectsResponse>, ApiError> {
+    tracing::Span::current().record("bucket", bucket.as_str());
+
     let prefix = query.prefix.unwrap_or_default();
     let limit = query
         .limit

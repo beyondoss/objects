@@ -71,6 +71,7 @@ impl Storage {
     }
 
     /// Initiate a multipart upload. Returns a fresh upload_id (UUID v4).
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn init_multipart(
         &self,
         bucket: &str,
@@ -103,6 +104,7 @@ impl Storage {
 
     /// Upload one part. Returns its quoted-MD5 etag. Re-uploading the same
     /// `part_number` overwrites the previous bytes (matches S3 semantics).
+    #[tracing::instrument(skip_all, fields(upload_id, part_number))]
     pub async fn write_part(
         &self,
         upload_id: &str,
@@ -123,38 +125,28 @@ impl Storage {
         fs::create_dir_all(&tmp_dir).await?;
         let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
 
-        let (etag, _size, file) = stream_to_tmp(&tmp_path, &mut reader).await.inspect_err(
-            |_| {
-                let p = tmp_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = fs::remove_file(&p).await {
-                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                    }
-                });
-            },
-        )?;
+        let (etag, _size, file) = match stream_to_tmp(&tmp_path, &mut reader).await {
+            Ok(v) => v,
+            Err(e) => {
+                Storage::cleanup_tmp(&tmp_path).await;
+                return Err(e);
+            }
+        };
 
-        self.sync
+        if let Err(e) = self
+            .sync
             .sync_file(file)
             .await
             .map_err(crate::StorageError::Io)
-            .inspect_err(|_| {
-                let p = tmp_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = fs::remove_file(&p).await {
-                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                    }
-                });
-            })?;
+        {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
 
-        xattr::set(&tmp_path, xattr::ETAG, etag.as_bytes()).inspect_err(|_| {
-            let p = tmp_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = fs::remove_file(&p).await {
-                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                }
-            });
-        })?;
+        if let Err(e) = xattr::set(&tmp_path, xattr::ETAG, etag.as_bytes()) {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
 
         let final_path = self.part_path(upload_id, part_number);
         fs::rename(&tmp_path, &final_path).await?;
@@ -182,9 +174,11 @@ impl Storage {
                 continue;
             };
             let meta = entry.metadata().await?;
-            let etag = xattr::get(&entry.path(), xattr::ETAG)?
-                .and_then(|b| String::from_utf8(b).ok())
-                .unwrap_or_default();
+            let etag = match xattr::get(&entry.path(), xattr::ETAG)? {
+                Some(b) => String::from_utf8(b)
+                    .map_err(|e| StorageError::Xattr(format!("part {number} etag: {e}")))?,
+                None => String::new(),
+            };
             parts.push(PartInfo {
                 number,
                 etag,
@@ -248,6 +242,7 @@ impl Storage {
 
     /// Abort a multipart upload — best-effort recursive removal of its directory.
     /// Idempotent: succeeds silently when the upload is already gone.
+    #[tracing::instrument(skip_all, fields(upload_id))]
     pub async fn abort_multipart(&self, upload_id: &str) -> Result<()> {
         let dir = self.upload_dir(upload_id);
         match fs::remove_dir_all(&dir).await {
@@ -259,6 +254,7 @@ impl Storage {
 
     /// Concatenate `parts` (in caller-supplied order, must be strictly ascending)
     /// into the final object. Returns the assembled `("{md5_of_part_md5s}-{N}", size)`.
+    #[tracing::instrument(skip_all, fields(upload_id))]
     pub async fn complete_multipart(
         &self,
         upload_id: &str,
@@ -296,32 +292,24 @@ impl Storage {
         fs::create_dir_all(&tmp_dir).await?;
         let tmp_path = tmp_dir.join(Uuid::new_v4().to_string());
 
-        let (final_etag, total_size) = assemble_parts(&dir, parts, &tmp_path).await.inspect_err(
-            |_| {
-                let p = tmp_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = fs::remove_file(&p).await {
-                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                    }
-                });
-            },
-        )?;
+        let (final_etag, total_size) = match assemble_parts(&dir, parts, &tmp_path).await {
+            Ok(v) => v,
+            Err(e) => {
+                Storage::cleanup_tmp(&tmp_path).await;
+                return Err(e);
+            }
+        };
 
-        xattr::set_object(
+        if let Err(e) = xattr::set_object(
             &tmp_path,
             &final_etag,
             meta.content_type.as_deref(),
             meta.access,
             &meta.user_metadata,
-        )
-        .inspect_err(|_| {
-            let p = tmp_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = fs::remove_file(&p).await {
-                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                }
-            });
-        })?;
+        ) {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
 
         let final_path = self.data_dir.join(&meta.bucket).join(&meta.key);
         if let Some(parent) = final_path.parent() {
@@ -423,11 +411,16 @@ async fn assemble_parts(
 
     for part in parts {
         let path = upload_dir.join(part.number.to_string());
-        let stored_etag = xattr::get(&path, xattr::ETAG)?
-            .and_then(|b| String::from_utf8(b).ok())
-            .ok_or_else(|| {
-                StorageError::InvalidPart(format!("part {} not uploaded", part.number))
-            })?;
+        let stored_etag = match xattr::get(&path, xattr::ETAG)? {
+            None => {
+                return Err(StorageError::InvalidPart(format!(
+                    "part {} not uploaded",
+                    part.number
+                )));
+            }
+            Some(b) => String::from_utf8(b)
+                .map_err(|e| StorageError::Xattr(format!("part {} etag: {e}", part.number)))?,
+        };
         if stored_etag != part.etag {
             return Err(StorageError::InvalidPart(format!(
                 "part {} etag mismatch (stored {stored_etag}, supplied {})",

@@ -47,10 +47,14 @@ impl Storage {
         let mut entries = fs::read_dir(&self.data_dir).await?;
         let mut buckets = Vec::new();
         while let Some(entry) = entries.next_entry().await? {
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let raw_name = entry.file_name();
+            let Some(name) = raw_name.to_str() else {
+                continue;
+            };
             if name.starts_with('.') {
                 continue;
             }
+            let name = name.to_owned();
             if !entry.file_type().await?.is_dir() {
                 continue;
             }

@@ -11,6 +11,7 @@ use crate::{Result, Storage, StorageError, xattr};
 impl Storage {
     /// Update the access xattr on an existing object. Returns `NotFound` if the
     /// object does not exist. Used by the metadata-PATCH path.
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn update_object_access(
         &self,
         bucket: &str,
@@ -31,6 +32,7 @@ impl Storage {
 }
 
 impl Storage {
+    #[tracing::instrument(skip_all, fields(bucket, key))]
     pub async fn write_object(
         &self,
         bucket: &str,
@@ -46,54 +48,72 @@ impl Storage {
         fs::create_dir_all(&self.tmp_dir).await?;
         let tmp_path = self.tmp_dir.join(Uuid::new_v4().to_string());
 
-        let (etag, size, file) = stream_to_tmp(&tmp_path, &mut reader)
-            .await
-            .inspect_err(|_| {
-                let p = tmp_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = fs::remove_file(&p).await {
-                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                    }
-                });
-            })?;
+        let (etag, size, file) = match stream_to_tmp(&tmp_path, &mut reader).await {
+            Ok(v) => v,
+            Err(e) => {
+                Storage::cleanup_tmp(&tmp_path).await;
+                return Err(e);
+            }
+        };
 
-        self.sync
-            .sync_file(file)
-            .await
-            .map_err(StorageError::Io)
-            .inspect_err(|_| {
-                let p = tmp_path.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = fs::remove_file(&p).await {
-                        tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                    }
-                });
-            })?;
+        if let Err(e) = self.sync.sync_file(file).await.map_err(StorageError::Io) {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
 
-        xattr::set_object(
+        if let Err(e) = xattr::set_object(
             &tmp_path,
             &etag,
             meta.content_type.as_deref(),
             meta.access,
             &meta.user_metadata,
-        )
-        .inspect_err(|_| {
-            let p = tmp_path.clone();
-            tokio::spawn(async move {
-                if let Err(e) = fs::remove_file(&p).await {
-                    tracing::warn!(path = %p.display(), err = %e, "temp file cleanup failed");
-                }
-            });
-        })?;
+        ) {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e);
+        }
+
+        // Only needed for keys with path separators; bucket dir already exists for flat keys.
+        // Must happen before any rename so the destination directory exists.
+        if key.contains('/')
+            && let Some(parent) = final_path.parent()
+        {
+            fs::create_dir_all(parent).await?;
+        }
 
         match &condition {
             Some(WriteCondition::IfNoneMatch) => {
-                // Stat-check before rename: there is a narrow TOCTOU window where two
-                // concurrent IfNoneMatch writes can both pass this check. On a single-node
-                // GlideFS deployment this window is sub-microsecond; the trade-off is
-                // accepted for Phase 1. A future upgrade path is `renameat2(RENAME_NOREPLACE)`
-                // on Linux, which makes the check-and-rename atomic at the syscall level.
-                // TODO: upgrade to renameat2(RENAME_NOREPLACE) on Linux for atomic CAS semantics.
+                // On Linux, renameat2(RENAME_NOREPLACE) makes the check-and-rename
+                // atomic at the syscall level, eliminating the TOCTOU window.
+                // On other platforms the stat-before-rename fallback remains.
+                #[cfg(target_os = "linux")]
+                {
+                    let tmp = tmp_path.clone();
+                    let dest = final_path.clone();
+                    return match tokio::task::spawn_blocking(move || {
+                        rename_noreplace_sync(&tmp, &dest)
+                    })
+                    .await
+                    .map_err(|e| {
+                        StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+                    })? {
+                        Ok(()) => {
+                            tracing::debug!(bucket, key, etag, size, "object written");
+                            Ok((etag, size))
+                        }
+                        Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
+                            Storage::cleanup_tmp(&tmp_path).await;
+                            Err(StorageError::ObjectExists {
+                                bucket: bucket.into(),
+                                key: key.into(),
+                            })
+                        }
+                        Err(e) => {
+                            Storage::cleanup_tmp(&tmp_path).await;
+                            Err(StorageError::Io(e))
+                        }
+                    };
+                }
+                #[cfg(not(target_os = "linux"))]
                 if final_path.try_exists()? {
                     if let Err(e) = fs::remove_file(&tmp_path).await {
                         tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
@@ -127,12 +147,6 @@ impl Storage {
             None => {}
         }
 
-        // Only needed for keys with path separators; bucket dir already exists for flat keys.
-        if key.contains('/')
-            && let Some(parent) = final_path.parent()
-        {
-            fs::create_dir_all(parent).await?;
-        }
         fs::rename(&tmp_path, &final_path).await?;
         tracing::debug!(bucket, key, etag, size, "object written");
         Ok((etag, size))
@@ -169,6 +183,35 @@ pub(crate) async fn stream_to_tmp(
     let file = buf_file.into_inner();
     let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
     Ok((etag, total, file))
+}
+
+/// Atomic create-or-fail rename using `renameat2(RENAME_NOREPLACE)`.
+/// Returns `Err` with `EEXIST` if the destination already exists.
+/// Only available on Linux; callers guard with `#[cfg(target_os = "linux")]`.
+#[cfg(target_os = "linux")]
+fn rename_noreplace_sync(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    const RENAME_NOREPLACE: libc::c_uint = 1;
+    let from_c = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF-8 path"))?;
+    let to_c = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF-8 path"))?;
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD as libc::c_long,
+            from_c.as_ptr(),
+            libc::AT_FDCWD as libc::c_long,
+            to_c.as_ptr(),
+            RENAME_NOREPLACE as libc::c_ulong,
+        )
+    };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 pub(crate) fn validate_key(key: &str) -> Result<()> {

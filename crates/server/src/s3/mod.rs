@@ -26,7 +26,7 @@ use s3s::service::{S3Service, S3ServiceBuilder};
 use crate::AppState;
 
 /// Build the fallback service. Mounted via `Router::fallback_service` so
-/// explicit `/v1/*` and `/healthz` routes always win.
+/// explicit `/v1/*`, `/livez`, and `/readyz` routes always win.
 pub fn service(state: AppState) -> FallbackS3 {
     use secrecy::ExposeSecret;
     let token = state.config.objects_root_token.expose_secret().clone();
