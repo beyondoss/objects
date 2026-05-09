@@ -60,7 +60,7 @@ pub struct Config {
 
     /// OTLP trace sample rate (0.0 = never, 1.0 = always, 0.1 = 10%).
     /// Only effective when OTLP_ENABLED=true.
-    #[arg(long, env = "OTLP_SAMPLE_RATE", default_value_t = 1.0)]
+    #[arg(long, env = "OTLP_SAMPLE_RATE", default_value_t = 0.1)]
     pub otlp_sample_rate: f64,
 
     /// Minimum age in seconds for orphaned temp files (`.tmp/` directory) to be

@@ -153,7 +153,7 @@ impl<B> MakeSpan<B> for OtelMakeSpan {
         use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
         let span = tracing::info_span!(
-            "HTTP request",
+            "http.request",
             http.method = %request.method(),
             http.uri = %request.uri(),
             http.version = ?request.version(),
