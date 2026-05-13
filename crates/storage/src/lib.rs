@@ -10,7 +10,7 @@ pub(crate) mod write;
 mod xattr;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -68,26 +68,5 @@ impl Storage {
         if let Err(e) = tokio::fs::remove_file(path).await {
             tracing::warn!(path = %path.display(), err = %e, "temp file cleanup failed");
         }
-    }
-}
-
-impl Storage {
-    /// Resolve bucket access level: cache-first, falling back to a filesystem
-    /// `getxattr` on a miss. Populates the cache on the slow path.
-    pub(crate) fn cached_bucket_access(
-        &self,
-        bucket: &str,
-        bucket_path: &Path,
-    ) -> Result<AccessLevel> {
-        if let Ok(cache) = self.bucket_access.read()
-            && let Some(&access) = cache.get(bucket)
-        {
-            return Ok(access);
-        }
-        let access = xattr::read_access(bucket_path)?.unwrap_or_default();
-        if let Ok(mut cache) = self.bucket_access.write() {
-            cache.insert(bucket.to_owned(), access);
-        }
-        Ok(access)
     }
 }

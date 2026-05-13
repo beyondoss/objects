@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::os::unix::io::AsRawFd;
+use std::path::Path;
+use std::sync::{Arc, RwLock};
 
 use tokio::fs;
 use uuid::Uuid;
 
-use crate::types::ObjectInfo;
+use crate::types::{AccessLevel, ObjectInfo};
 use crate::write::{validate_bucket, validate_key};
 use crate::{Result, Storage, StorageError, xattr};
 
@@ -12,69 +15,79 @@ impl Storage {
     pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo> {
         validate_bucket(bucket)?;
         validate_key(key)?;
+        let path = self.data_dir.join(bucket).join(key);
         let bucket_path = self.data_dir.join(bucket);
-        let path = bucket_path.join(key);
-        let meta = fs::metadata(&path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::NotFound {
-                    bucket: bucket.into(),
-                    key: key.into(),
+        let bucket_owned = bucket.to_owned();
+        let bucket_access = Arc::clone(&self.bucket_access);
+        tokio::task::spawn_blocking(move || {
+            let meta = std::fs::metadata(&path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound {
+                        bucket: bucket_owned.clone(),
+                        key: String::new(),
+                    }
+                } else {
+                    e.into()
                 }
-            } else {
-                e.into()
-            }
-        })?;
-        let attrs = xattr::read_object(&path)?;
-        let access = match attrs.access {
-            Some(a) => a,
-            None => self.cached_bucket_access(bucket, &bucket_path)?,
-        };
-        Ok(ObjectInfo {
-            size: meta.len(),
-            etag: attrs.etag,
-            last_modified: meta.modified()?,
-            content_type: attrs.content_type,
-            access,
-            user_metadata: attrs.user_metadata,
+            })?;
+            let attrs = xattr::read_object(&path)?;
+            let access = resolve_access(attrs.access, &bucket_owned, &bucket_path, &bucket_access)?;
+            Ok(ObjectInfo {
+                size: meta.len(),
+                etag: attrs.etag,
+                last_modified: meta.modified()?,
+                content_type: attrs.content_type,
+                access,
+                user_metadata: attrs.user_metadata,
+            })
         })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
     }
 
     /// Returns object info and an open file handle. Caller uses the file for streaming.
     ///
-    /// Opens the file first then fstats the fd — saves one path lookup vs stat-then-open,
-    /// and eliminates the TOCTOU window between the two separate syscalls. Xattr reads
-    /// use the open fd directly (`fgetxattr`) to avoid re-resolving the path in the VFS.
+    /// All blocking work (open, fstat, fgetxattr) runs in a single `spawn_blocking`
+    /// dispatch — one thread-pool round-trip for the entire open_object path.
     #[tracing::instrument(skip_all, fields(bucket, key))]
-    pub async fn open_object(&self, bucket: &str, key: &str) -> Result<(ObjectInfo, fs::File)> {
+    pub async fn open_object(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(ObjectInfo, std::fs::File)> {
         validate_bucket(bucket)?;
         validate_key(key)?;
+        let path = self.data_dir.join(bucket).join(key);
         let bucket_path = self.data_dir.join(bucket);
-        let path = bucket_path.join(key);
-        let file = fs::File::open(&path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::NotFound {
-                    bucket: bucket.into(),
-                    key: key.into(),
+        let bucket_owned = bucket.to_owned();
+        let key_owned = key.to_owned();
+        let bucket_access = Arc::clone(&self.bucket_access);
+        tokio::task::spawn_blocking(move || {
+            let file = std::fs::File::open(&path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound {
+                        bucket: bucket_owned.clone(),
+                        key: key_owned,
+                    }
+                } else {
+                    e.into()
                 }
-            } else {
-                e.into()
-            }
-        })?;
-        let meta = file.metadata().await?;
-        let attrs = xattr::read_object_fd(file.as_raw_fd())?;
-        let access = match attrs.access {
-            Some(a) => a,
-            None => self.cached_bucket_access(bucket, &bucket_path)?,
-        };
-        let info = ObjectInfo {
-            size: meta.len(),
-            etag: attrs.etag,
-            last_modified: meta.modified()?,
-            content_type: attrs.content_type,
-            access,
-            user_metadata: attrs.user_metadata,
-        };
-        Ok((info, file))
+            })?;
+            let meta = file.metadata()?;
+            let attrs = xattr::read_object_fd(file.as_raw_fd())?;
+            let access = resolve_access(attrs.access, &bucket_owned, &bucket_path, &bucket_access)?;
+            let info = ObjectInfo {
+                size: meta.len(),
+                etag: attrs.etag,
+                last_modified: meta.modified()?,
+                content_type: attrs.content_type,
+                access,
+                user_metadata: attrs.user_metadata,
+            };
+            Ok((info, file))
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
     }
 
     /// Delete an object. Idempotent: succeeds silently if the object is already gone.
@@ -173,6 +186,32 @@ impl Storage {
         fs::rename(&src, &dst).await?;
         Ok(())
     }
+}
+
+/// Resolve the effective access level for an object.
+///
+/// If the object's own xattr is set, use it. Otherwise fall back to the
+/// bucket-level cache (populated on first miss via a `getxattr` on the
+/// bucket directory). Callable from within `spawn_blocking`.
+pub(crate) fn resolve_access(
+    object_access: Option<AccessLevel>,
+    bucket: &str,
+    bucket_path: &Path,
+    cache: &RwLock<HashMap<String, AccessLevel>>,
+) -> Result<AccessLevel> {
+    if let Some(a) = object_access {
+        return Ok(a);
+    }
+    if let Ok(guard) = cache.read()
+        && let Some(&a) = guard.get(bucket)
+    {
+        return Ok(a);
+    }
+    let a = xattr::read_access(bucket_path)?.unwrap_or_default();
+    if let Ok(mut guard) = cache.write() {
+        guard.insert(bucket.to_owned(), a);
+    }
+    Ok(a)
 }
 
 #[cfg(test)]

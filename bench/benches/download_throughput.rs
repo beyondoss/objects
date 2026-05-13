@@ -1,15 +1,14 @@
 //! Download throughput benchmarks against a tempfile-backed `Storage`.
 //!
 //! Two groups:
-//!   - `download`            — single-client sequential reads across payload sizes
-//!   - `download_concurrent` — fixed 4 KiB payload, varying concurrency levels
+//!   - `download`            — single-client sequential reads, mmap path (matches server)
+//!   - `download_concurrent` — fixed 4 KiB payload, varying concurrency levels, mmap path
 
 use std::io::Cursor;
 use std::sync::Arc;
 
 use beyond_objects_storage::{ObjectMeta, Storage};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tokio::io::AsyncReadExt;
 
 fn bench_download(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -57,10 +56,15 @@ fn bench_download(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(*size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(label), size, |b, _| {
             b.to_async(&rt).iter(|| async {
-                let (_info, mut file) = storage.open_object("bench", &key).await.unwrap();
-                let mut sink = Vec::with_capacity(*size);
-                file.read_to_end(&mut sink).await.unwrap();
-                std::hint::black_box(sink);
+                let (_info, file) = storage.open_object("bench", &key).await.unwrap();
+                let mmap = tokio::task::spawn_blocking(move || {
+                    let m = unsafe { memmap2::MmapOptions::new().map(&file) }.unwrap();
+                    drop(file);
+                    m
+                })
+                .await
+                .unwrap();
+                std::hint::black_box(mmap);
             });
         });
     }
@@ -109,11 +113,17 @@ fn bench_download_concurrent(c: &mut Criterion) {
                         .map(|_| {
                             let storage = Arc::clone(&storage);
                             tokio::spawn(async move {
-                                let (_info, mut file) =
+                                let (_info, file) =
                                     storage.open_object("bench", KEY).await.unwrap();
-                                let mut sink = Vec::with_capacity(SIZE);
-                                file.read_to_end(&mut sink).await.unwrap();
-                                std::hint::black_box(sink);
+                                let mmap = tokio::task::spawn_blocking(move || {
+                                    let m =
+                                        unsafe { memmap2::MmapOptions::new().map(&file) }.unwrap();
+                                    drop(file);
+                                    m
+                                })
+                                .await
+                                .unwrap();
+                                std::hint::black_box(mmap);
                             })
                         })
                         .collect();

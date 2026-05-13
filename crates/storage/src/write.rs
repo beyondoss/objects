@@ -61,17 +61,6 @@ impl Storage {
             return Err(e);
         }
 
-        if let Err(e) = xattr::set_object(
-            &tmp_path,
-            &etag,
-            meta.content_type.as_deref(),
-            meta.access,
-            &meta.user_metadata,
-        ) {
-            Storage::cleanup_tmp(&tmp_path).await;
-            return Err(e);
-        }
-
         // Only needed for keys with path separators; bucket dir already exists for flat keys.
         // Must happen before any rename so the destination directory exists.
         if key.contains('/')
@@ -80,74 +69,101 @@ impl Storage {
             fs::create_dir_all(parent).await?;
         }
 
-        match &condition {
-            Some(WriteCondition::IfNoneMatch) => {
-                // On Linux, renameat2(RENAME_NOREPLACE) makes the check-and-rename
-                // atomic at the syscall level, eliminating the TOCTOU window.
-                // On other platforms the stat-before-rename fallback remains.
-                #[cfg(target_os = "linux")]
-                {
-                    let tmp = tmp_path.clone();
-                    let dest = final_path.clone();
-                    return match tokio::task::spawn_blocking(move || {
-                        rename_noreplace_sync(&tmp, &dest)
-                    })
-                    .await
-                    .map_err(|e| {
-                        StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
-                    })? {
-                        Ok(()) => {
-                            tracing::debug!(bucket, key, etag, size, "object written");
-                            Ok((etag, size))
-                        }
-                        Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
-                            Storage::cleanup_tmp(&tmp_path).await;
-                            Err(StorageError::ObjectExists {
-                                bucket: bucket.into(),
-                                key: key.into(),
-                            })
-                        }
-                        Err(e) => {
-                            Storage::cleanup_tmp(&tmp_path).await;
-                            Err(StorageError::Io(e))
-                        }
-                    };
-                }
-                #[cfg(not(target_os = "linux"))]
-                if final_path.try_exists()? {
-                    if let Err(e) = fs::remove_file(&tmp_path).await {
-                        tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
-                    }
-                    return Err(StorageError::ObjectExists {
+        // Resolve the IfMatch condition (reads the existing etag xattr) before
+        // we commit, while we can still clean up the tmp file on failure.
+        if let Some(WriteCondition::IfMatch(expected)) = &condition {
+            let dest = final_path.clone();
+            let expected = expected.clone();
+            let check = tokio::task::spawn_blocking(move || xattr::get(&dest, xattr::ETAG))
+                .await
+                .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
+            match check? {
+                None => {
+                    Storage::cleanup_tmp(&tmp_path).await;
+                    return Err(StorageError::NotFound {
                         bucket: bucket.into(),
                         key: key.into(),
                     });
                 }
-            }
-            Some(WriteCondition::IfMatch(expected)) => {
-                match xattr::get(&final_path, xattr::ETAG)? {
-                    None => {
-                        if let Err(e) = fs::remove_file(&tmp_path).await {
-                            tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
-                        }
-                        return Err(StorageError::NotFound {
-                            bucket: bucket.into(),
-                            key: key.into(),
-                        });
-                    }
-                    Some(actual) if actual.as_slice() != expected.as_bytes() => {
-                        if let Err(e) = fs::remove_file(&tmp_path).await {
-                            tracing::warn!(path = %tmp_path.display(), err = %e, "temp file cleanup failed");
-                        }
-                        return Err(StorageError::EtagMismatch);
-                    }
-                    _ => {}
+                Some(actual) if actual.as_slice() != expected.as_bytes() => {
+                    Storage::cleanup_tmp(&tmp_path).await;
+                    return Err(StorageError::EtagMismatch);
                 }
+                _ => {}
             }
-            None => {}
         }
 
-        fs::rename(&tmp_path, &final_path).await?;
+        // For the IfNoneMatch + Linux path, renameat2(RENAME_NOREPLACE) makes the
+        // check-and-rename atomic at the syscall level. xattr is written inside the
+        // same spawn_blocking so the whole commit (xattr + rename) is off the async thread.
+        #[cfg(target_os = "linux")]
+        if matches!(condition, Some(WriteCondition::IfNoneMatch)) {
+            let tmp = tmp_path.clone();
+            let dest = final_path.clone();
+            let etag_c = etag.clone();
+            let content_type = meta.content_type.clone();
+            let user_metadata = meta.user_metadata.clone();
+            return match tokio::task::spawn_blocking(move || {
+                xattr::set_object(
+                    &tmp,
+                    &etag_c,
+                    content_type.as_deref(),
+                    meta.access,
+                    &user_metadata,
+                )?;
+                rename_noreplace_sync(&tmp, &dest)
+            })
+            .await
+            .map_err(|e| StorageError::Io(std::io::Error::other(e)))?
+            {
+                Ok(()) => {
+                    tracing::debug!(bucket, key, etag, size, "object written");
+                    Ok((etag, size))
+                }
+                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
+                    Storage::cleanup_tmp(&tmp_path).await;
+                    Err(StorageError::ObjectExists {
+                        bucket: bucket.into(),
+                        key: key.into(),
+                    })
+                }
+                Err(e) => {
+                    Storage::cleanup_tmp(&tmp_path).await;
+                    Err(StorageError::Io(e))
+                }
+            };
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        if matches!(condition, Some(WriteCondition::IfNoneMatch)) && final_path.try_exists()? {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(StorageError::ObjectExists {
+                bucket: bucket.into(),
+                key: key.into(),
+            });
+        }
+
+        // Common commit path: xattr write + rename in a single spawn_blocking.
+        // Keeps both blocking syscalls off the async thread and halves the number
+        // of thread-pool round-trips vs calling them separately.
+        let tmp = tmp_path.clone();
+        let dest = final_path.clone();
+        let etag_c = etag.clone();
+        let content_type = meta.content_type.clone();
+        let user_metadata = meta.user_metadata.clone();
+        tokio::task::spawn_blocking(move || {
+            xattr::set_object(
+                &tmp,
+                &etag_c,
+                content_type.as_deref(),
+                meta.access,
+                &user_metadata,
+            )?;
+            std::fs::rename(&tmp, &dest).map_err(StorageError::Io)
+        })
+        .await
+        .map_err(|e| StorageError::Io(std::io::Error::other(e)))??;
+
         tracing::debug!(bucket, key, etag, size, "object written");
         Ok((etag, size))
     }

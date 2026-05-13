@@ -693,11 +693,14 @@ dependencies = [
  "beyond-objects",
  "beyond-objects-storage",
  "criterion",
+ "memmap2",
  "reqwest 0.13.3",
  "secrecy",
  "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
+ "xattr",
 ]
 
 [[package]]

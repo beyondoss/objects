@@ -262,22 +262,21 @@ impl S3 for ObjectsS3 {
         let body = if length == 0 {
             StreamingBlob::wrap(futures::stream::empty::<std::io::Result<bytes::Bytes>>())
         } else {
-            let file_std = file.into_std().await;
             let data = tokio::task::spawn_blocking(move || -> std::io::Result<bytes::Bytes> {
                 // SAFETY: Objects are write-once-by-rename (no in-place mutation ever
                 // occurs). `delete_object` and `move_object` use `unlink`/`rename`; on
                 // Linux and macOS these never invalidate a live `Mmap` — the inode is
                 // reference-counted by the OS and persists until all fds and mappings
-                // are released. `file_std` pins the inode through mmap creation;
+                // are released. `file` pins the inode through mmap creation;
                 // dropping it afterward is safe because `Mmap` holds the reference
                 // independently of the fd.
                 let mmap = unsafe {
                     memmap2::MmapOptions::new()
                         .offset(start)
                         .len(length as usize)
-                        .map(&file_std)?
+                        .map(&file)?
                 };
-                drop(file_std);
+                drop(file);
                 Ok(bytes::Bytes::from_owner(mmap))
             })
             .await
