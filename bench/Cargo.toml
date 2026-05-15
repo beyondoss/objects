@@ -8,8 +8,9 @@ license.workspace = true
 beyond-objects = { path = "../crates/server" }
 beyond-objects-storage = { path = "../crates/storage" }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+libc = { workspace = true }
 memmap2 = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["http2"] }
 secrecy = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }

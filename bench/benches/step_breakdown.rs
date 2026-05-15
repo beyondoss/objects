@@ -20,6 +20,8 @@
 
 use std::io::Cursor;
 use std::os::unix::io::AsRawFd;
+#[allow(unused_imports)]
+use std::os::unix::prelude::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -219,7 +221,67 @@ fn bench_put_steps(c: &mut Criterion) {
         });
     });
 
-    // 5. write + fdatasync + rename — the full PUT sequence minus xattr
+    // 5. O_DSYNC write (4KiB) + rename — no explicit fdatasync; every write() call is
+    //    synchronously flushed to stable storage by the kernel. The hypothesis:
+    //    the kernel can pipeline the sync with the write, saving a round-trip.
+    //    With BufWriter(256KiB), a 4KiB payload = 1 write() syscall on flush,
+    //    so this is equivalent to write + fdatasync but possibly faster if pipelined.
+    group.bench_function("o_dsync_rename/4KiB", |b| {
+        let payload = Arc::clone(&payload);
+        let tmp_dir = Arc::clone(&tmp_dir);
+        let final_dir = Arc::clone(&final_dir);
+        b.to_async(&rt).iter(|| async {
+            let tmp: PathBuf = tmp_dir.join(uuid::Uuid::new_v4().to_string());
+            let dst: PathBuf = final_dir.join(uuid::Uuid::new_v4().to_string());
+            let f = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .custom_flags(libc::O_DSYNC)
+                .open(&tmp)
+                .await
+                .unwrap();
+            let mut w = BufWriter::with_capacity(256 * 1024, f);
+            w.write_all(&payload).await.unwrap();
+            w.flush().await.unwrap();
+            drop(w);
+            tokio::fs::rename(&tmp, &dst).await.unwrap();
+            let _ = tokio::fs::remove_file(&dst).await;
+        });
+    });
+
+    // 6. O_DSYNC write (1MiB) + rename — 1MiB = 4x 256KiB write() calls, each
+    //    synchronous. May be worse than a single fdatasync at the end.
+    {
+        let payload_1m: Arc<[u8]> = vec![0u8; 1024 * 1024].into();
+        group.throughput(Throughput::Bytes(1024 * 1024));
+        group.bench_function("o_dsync_rename/1MiB", |b| {
+            let payload = Arc::clone(&payload_1m);
+            let tmp_dir = Arc::clone(&tmp_dir);
+            let final_dir = Arc::clone(&final_dir);
+            b.to_async(&rt).iter(|| async {
+                let tmp: PathBuf = tmp_dir.join(uuid::Uuid::new_v4().to_string());
+                let dst: PathBuf = final_dir.join(uuid::Uuid::new_v4().to_string());
+                let f = tokio::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .custom_flags(libc::O_DSYNC)
+                    .open(&tmp)
+                    .await
+                    .unwrap();
+                let mut w = BufWriter::with_capacity(256 * 1024, f);
+                w.write_all(&payload).await.unwrap();
+                w.flush().await.unwrap();
+                drop(w);
+                tokio::fs::rename(&tmp, &dst).await.unwrap();
+                let _ = tokio::fs::remove_file(&dst).await;
+            });
+        });
+        group.throughput(Throughput::Bytes(SIZE_4K as u64));
+    }
+
+    // 6. write + fdatasync + rename — the full PUT sequence minus xattr
     group.bench_function("write_fsync_rename", |b| {
         let payload = Arc::clone(&payload);
         let tmp_dir = Arc::clone(&tmp_dir);

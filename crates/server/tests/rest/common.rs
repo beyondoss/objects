@@ -34,6 +34,9 @@ pub fn server() -> &'static TestServer {
                     otlp_sample_rate: 1.0,
                     gc_temp_ttl_secs: 3600,
                     gc_multipart_ttl_secs: 86400,
+                    tls_cert: None,
+                    tls_key: None,
+                    tls_ca: None,
                 };
                 let server = beyond_objects::test_support::start(config)
                     .await

@@ -206,6 +206,26 @@ export interface BucketsClient {
   delete(name: string): ObjectsResult;
 }
 
+// ── h2c default fetch ────────────────────────────────────────────────────────
+// In Node 18+ (our minimum), undici is a built-in. Using an Agent with
+// allowH2: true makes every cleartext HTTP connection automatically use HTTP/2
+// when the server supports it — no TLS, no user config needed. In browsers and
+// edge runtimes the import fails silently and globalThis.fetch is used instead
+// (which already negotiates h2 via ALPN for https endpoints).
+
+let _h2Fetch: typeof globalThis.fetch | undefined;
+// Use a variable so bundlers don't statically resolve the import.
+const _undici = "undici";
+const _h2FetchInit: Promise<void> = (import(_undici) as Promise<any>)
+  .then(({ fetch: f, Agent }: any) => {
+    const agent = new Agent({ allowH2: true });
+    _h2Fetch = (url, init) =>
+      f(url, { ...(init ?? {}), dispatcher: agent }) as Promise<Response>;
+  })
+  .catch(() => {
+    /* not Node or undici unavailable — fall back to globalThis.fetch */
+  });
+
 // ── Helpers (mirror Queue's client.ts byte-for-byte where shapes match) ─────
 
 function toObjectsError(raw: unknown, response: Response): ObjectsError {
@@ -249,8 +269,9 @@ function buildFetch(
   retries: number,
   timeout: number | undefined,
 ): typeof globalThis.fetch {
-  const fetchFn = base ?? globalThis.fetch;
   return async (input, init) => {
+    if (!_h2Fetch) await _h2FetchInit;
+    const fetchFn = base ?? _h2Fetch ?? globalThis.fetch;
     const signal = timeout != null
       ? AbortSignal.timeout(timeout)
       : init?.signal;

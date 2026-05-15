@@ -70,6 +70,19 @@ pub struct Config {
     /// multi-hour uploads of very large objects.
     #[arg(long, env = "GC_MULTIPART_TTL_SECS", default_value_t = 86400)]
     pub gc_multipart_ttl_secs: u64,
+
+    /// Path to the PEM-encoded TLS certificate for this service.
+    /// When all three BEYOND_TLS_* vars are set, the server switches to mTLS.
+    #[arg(long, env = "BEYOND_TLS_CERT")]
+    pub tls_cert: Option<String>,
+
+    /// Path to the PEM-encoded TLS private key for this service.
+    #[arg(long, env = "BEYOND_TLS_KEY")]
+    pub tls_key: Option<String>,
+
+    /// Path to the PEM-encoded CA certificate used to verify client certificates.
+    #[arg(long, env = "BEYOND_TLS_CA")]
+    pub tls_ca: Option<String>,
 }
 
 impl std::fmt::Debug for Config {

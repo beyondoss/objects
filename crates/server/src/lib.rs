@@ -20,7 +20,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use tower::ServiceBuilder;
+use tower::{ServiceBuilder, ServiceExt};
 use tower_http::{
     catch_panic::CatchPanicLayer,
     cors::{Any, CorsLayer},
@@ -351,6 +351,9 @@ pub async fn serve(config: Config) -> Result<()> {
 
     let address = config.address.clone();
     let drain_timeout_secs = config.drain_timeout_secs;
+    let state_tls_cert = config.tls_cert.clone();
+    let state_tls_key = config.tls_key.clone();
+    let state_tls_ca = config.tls_ca.clone();
     let state = AppState {
         config: Arc::new(config),
         storage,
@@ -360,31 +363,42 @@ pub async fn serve(config: Config) -> Result<()> {
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&address).await?;
-    tracing::info!(address = %address, "listening");
+    let tls = match (&state_tls_cert, &state_tls_key, &state_tls_ca) {
+        (Some(cert), Some(key), Some(ca)) => Some((cert.clone(), key.clone(), ca.clone())),
+        (None, None, None) => None,
+        _ => anyhow::bail!(
+            "BEYOND_TLS_CERT, BEYOND_TLS_KEY, and BEYOND_TLS_CA must all be set or all unset"
+        ),
+    };
+    tracing::info!(address = %address, tls = tls.is_some(), "listening");
 
-    // Pair a oneshot with the shutdown future so we can start the drain timer
-    // only after the signal fires, not from process start.
-    let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
-    let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        signal_tx.send(()).ok();
-    });
-
-    if drain_timeout_secs > 0 {
-        tokio::select! {
-            result = serve => { result?; }
-            _ = async move {
-                if signal_rx.await.is_ok() {
-                    tokio::time::sleep(std::time::Duration::from_secs(drain_timeout_secs)).await;
-                    tracing::warn!(
-                        drain_timeout_secs,
-                        "drain timeout exceeded, forcing shutdown"
-                    );
-                }
-            } => {}
-        }
+    if let Some((cert, key, ca)) = tls {
+        serve_tls(listener, &cert, &key, &ca, app).await?;
     } else {
-        serve.await?;
+        // Pair a oneshot with the shutdown future so we can start the drain timer
+        // only after the signal fires, not from process start.
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            signal_tx.send(()).ok();
+        });
+
+        if drain_timeout_secs > 0 {
+            tokio::select! {
+                result = serve => { result?; }
+                _ = async move {
+                    if signal_rx.await.is_ok() {
+                        tokio::time::sleep(std::time::Duration::from_secs(drain_timeout_secs)).await;
+                        tracing::warn!(
+                            drain_timeout_secs,
+                            "drain timeout exceeded, forcing shutdown"
+                        );
+                    }
+                } => {}
+            }
+        } else {
+            serve.await?;
+        }
     }
 
     Ok(())
@@ -422,4 +436,94 @@ async fn shutdown_signal() {
     }
 
     tracing::info!("shutdown signal received, draining connections");
+}
+
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    cert_path: &str,
+    key_path: &str,
+    ca_path: &str,
+    app: Router,
+) -> Result<()> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto::Builder;
+    use rustls::RootCertStore;
+    use rustls::ServerConfig;
+    use rustls::server::WebPkiClientVerifier;
+    use tokio_rustls::TlsAcceptor;
+
+    let server_certs = tls_load_certs(cert_path)?;
+    let server_key = tls_load_key(key_path)?;
+    let ca_certs = tls_load_certs(ca_path)?;
+
+    let mut ca_store = RootCertStore::empty();
+    for cert in ca_certs {
+        ca_store.add(cert)?;
+    }
+
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = WebPkiClientVerifier::builder_with_provider(
+        std::sync::Arc::new(ca_store),
+        provider.clone(),
+    )
+    .build()?;
+
+    let mut cfg = ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(server_certs, server_key)?;
+    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let acceptor = TlsAcceptor::from(std::sync::Arc::new(cfg));
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (tcp, _) = result?;
+                let acceptor = acceptor.clone();
+                let app = app.clone();
+                tokio::spawn(async move {
+                    match acceptor.accept(tcp).await {
+                        Ok(tls_stream) => {
+                            let io = TokioIo::new(tls_stream);
+                            let svc = hyper::service::service_fn(move |req: axum::http::Request<hyper::body::Incoming>| app.clone().oneshot(req));
+                            Builder::new(TokioExecutor::new())
+                                .serve_connection_with_upgrades(io, svc)
+                                .await
+                                .ok();
+                        }
+                        Err(e) => tracing::debug!(error = %e, "TLS handshake failed"),
+                    }
+                });
+            }
+            _ = shutdown_signal() => break,
+        }
+    }
+    Ok(())
+}
+
+pub async fn serve_with_listener(
+    listener: tokio::net::TcpListener,
+    tls: Option<(String, String, String)>,
+    app: Router,
+) -> Result<()> {
+    if let Some((cert, key, ca)) = tls {
+        serve_tls(listener, &cert, &key, &ca, app).await
+    } else {
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+}
+
+fn tls_load_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let f = std::fs::File::open(path)?;
+    rustls_pemfile::certs(&mut std::io::BufReader::new(f))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn tls_load_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    let f = std::fs::File::open(path)?;
+    rustls_pemfile::private_key(&mut std::io::BufReader::new(f))?
+        .ok_or_else(|| anyhow::anyhow!("no private key found in {path}"))
 }
