@@ -39,6 +39,7 @@ export {
   type PutResult,
   type Range,
   type S3Credentials,
+  type TlsOptions,
   type UpdateBucketOptions,
   type UploadTokenResult,
 } from "./client.js";

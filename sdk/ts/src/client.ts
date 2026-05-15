@@ -81,6 +81,24 @@ export interface ObjectsResponseEvent {
   durationMs: number;
 }
 
+/**
+ * mTLS / custom-CA options. Supply all three fields for mutual TLS, or just
+ * `ca` to pin a private CA without presenting a client certificate.
+ *
+ * - **Node / Bun**: forwarded to an undici `Agent` with `allowH2: true` so you
+ *   still get HTTP/2 multiplexing over the TLS connection.
+ * - **Deno**: forwarded to `Deno.createHttpClient`.
+ * - **Browser / edge runtimes**: silently ignored — the platform owns TLS.
+ */
+export interface TlsOptions {
+  /** PEM-encoded CA certificate (or array of certificates) to trust. */
+  ca?: string | string[];
+  /** PEM-encoded client certificate to present during the TLS handshake. */
+  cert?: string;
+  /** PEM-encoded private key matching `cert`. */
+  key?: string;
+}
+
 export interface ObjectsClientOptions {
   /** Base URL of the beyond-objects server. Defaults to the `BEYOND_OBJECTS_URL` env var. */
   url?: string;
@@ -102,6 +120,12 @@ export interface ObjectsClientOptions {
   onRequest?: (event: ObjectsRequestEvent) => void;
   /** Called after each response with the elapsed duration. */
   onResponse?: (event: ObjectsResponseEvent) => void;
+  /**
+   * TLS / mTLS options. When provided, the SDK builds a TLS-aware fetch
+   * instead of the plain H2 fetch. See {@link TlsOptions} for per-runtime
+   * behaviour.
+   */
+  tls?: TlsOptions;
 }
 
 export type ObjectsResult<T = undefined> = Promise<
@@ -226,6 +250,173 @@ const _h2FetchInit: Promise<void> = (import(_undici) as Promise<any>)
     /* not Node or undici unavailable — fall back to globalThis.fetch */
   });
 
+// ── TLS-aware fetch builder ──────────────────────────────────────────────────
+
+/**
+ * Build a TLS-aware fetch function for the given {@link TlsOptions}.
+ * Returns a Promise so the undici import can be awaited once and reused.
+ *
+ * - Deno: uses `Deno.createHttpClient` (native TLS support).
+ * - Node / Bun: creates an undici `Agent` with `allowH2: true` + `connect`
+ *   options so you get mTLS *and* HTTP/2 multiplexing.
+ * - Browser / edge: returns `globalThis.fetch` unchanged (platform owns TLS).
+ */
+function buildTlsFetchPromise(
+  tls: TlsOptions,
+): Promise<typeof globalThis.fetch> {
+  const cas = Array.isArray(tls.ca) ? tls.ca : tls.ca ? [tls.ca] : undefined;
+
+  // Deno
+  const g = globalThis as any;
+  if (
+    typeof g.Deno !== "undefined" &&
+    typeof g.Deno.createHttpClient === "function"
+  ) {
+    const client = g.Deno.createHttpClient({
+      caCerts: cas,
+      certChain: tls.cert,
+      privateKey: tls.key,
+    });
+    return Promise.resolve(
+      (url: RequestInfo | URL, init?: RequestInit) =>
+        globalThis.fetch(url, { ...init, client } as any),
+    );
+  }
+
+  // Node / Bun — try undici Agent with allowH2 + TLS connect options first
+  // (best: HTTP/2 + mTLS), then fall back to a node:https based fetch for
+  // environments where undici isn't available as a standalone package.
+  return (import(_undici) as Promise<any>)
+    .then(({ fetch: f, Agent }: any) => {
+      const connect: Record<string, unknown> = {};
+      if (cas != null) connect["ca"] = cas;
+      if (tls.cert != null) connect["cert"] = tls.cert;
+      if (tls.key != null) connect["key"] = tls.key;
+      const agent = new Agent({ allowH2: true, connect });
+      return (url: RequestInfo | URL, init?: RequestInit) => {
+        if (url instanceof Request) {
+          const req = url as Request;
+          return f(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: req.body,
+            ...(init ?? {}),
+            dispatcher: agent,
+          }) as Promise<Response>;
+        }
+        return f(url, { ...(init ?? {}), dispatcher: agent }) as Promise<Response>;
+      };
+    })
+    .catch(() =>
+      // undici unavailable — fall back to node:https with TLS options.
+      // This gives HTTP/1.1 with full mTLS; browsers/edge never reach here.
+      (import("node:https") as Promise<any>)
+        .then(({ request }: any) => {
+          return (
+            url: RequestInfo | URL,
+            init?: RequestInit,
+          ): Promise<Response> => {
+            // openapi-fetch passes a Request object as the first arg; extract
+            // url, method, headers, and body from it, then let init override.
+            const isRequest = typeof url === "object" && url instanceof Request;
+            const href = isRequest
+              ? (url as Request).url
+              : url instanceof URL
+                ? url.href
+                : (url as string);
+            const parsed = new URL(href);
+            const method = (
+              init?.method ??
+              (isRequest ? (url as Request).method : "GET")
+            ).toUpperCase();
+
+            // Merge headers: Request headers first, then init.headers on top
+            const headersRecord: Record<string, string> = {};
+            if (isRequest) {
+              (url as Request).headers.forEach(
+                (v: string, k: string) => { headersRecord[k] = v; },
+              );
+            }
+            const initHeaders = init?.headers;
+            if (initHeaders != null) {
+              if (initHeaders instanceof Headers) {
+                initHeaders.forEach((v, k) => { headersRecord[k] = v; });
+              } else if (Array.isArray(initHeaders)) {
+                for (const [k, v] of initHeaders as [string, string][]) {
+                  headersRecord[k] = v;
+                }
+              } else {
+                Object.assign(
+                  headersRecord,
+                  initHeaders as Record<string, string>,
+                );
+              }
+            }
+
+            const tlsOpts: Record<string, unknown> = {
+              rejectUnauthorized: true,
+            };
+            if (cas != null) tlsOpts["ca"] = cas;
+            if (tls.cert != null) tlsOpts["cert"] = tls.cert;
+            if (tls.key != null) tlsOpts["key"] = tls.key;
+
+            // Determine body: init.body wins, then Request body
+            const rawBody = init?.body ??
+              (isRequest ? (url as Request).body : null);
+
+            return new Promise((resolve, reject) => {
+              const options = {
+                hostname: parsed.hostname,
+                port: parsed.port || 443,
+                path: parsed.pathname + parsed.search,
+                method,
+                headers: headersRecord,
+                ...tlsOpts,
+              };
+              const req = request(options, (res: any) => {
+                const chunks: Buffer[] = [];
+                res.on("data", (c: Buffer) => chunks.push(c));
+                res.on("end", () => {
+                  const body = Buffer.concat(chunks);
+                  const headers = new Headers();
+                  for (const [k, v] of Object.entries(
+                    res.headers as Record<string, string | string[]>,
+                  )) {
+                    const vals = Array.isArray(v) ? v : [v];
+                    for (const val of vals) headers.append(k, val);
+                  }
+                  resolve(
+                    new Response(body, {
+                      status: res.statusCode ?? 200,
+                      headers,
+                    }),
+                  );
+                });
+                res.on("error", reject);
+              });
+              req.on("error", reject);
+              if (rawBody != null) {
+                if (typeof (rawBody as any).pipe === "function") {
+                  (rawBody as any).pipe(req);
+                } else if (rawBody instanceof Uint8Array) {
+                  req.write(rawBody);
+                  req.end();
+                } else if (typeof rawBody === "string") {
+                  req.write(rawBody);
+                  req.end();
+                } else {
+                  req.end();
+                }
+              } else {
+                req.end();
+              }
+            });
+          };
+        })
+        .catch(() => globalThis.fetch)
+    );
+}
+
 // ── Helpers (mirror Queue's client.ts byte-for-byte where shapes match) ─────
 
 function toObjectsError(raw: unknown, response: Response): ObjectsError {
@@ -266,12 +457,19 @@ function wrap<T>(
 
 function buildFetch(
   base: typeof globalThis.fetch | undefined,
+  tlsFetchPromise: Promise<typeof globalThis.fetch> | undefined,
   retries: number,
   timeout: number | undefined,
 ): typeof globalThis.fetch {
+  let resolvedTls: typeof globalThis.fetch | undefined;
+  const tlsInit = tlsFetchPromise?.then((f) => {
+    resolvedTls = f;
+  });
+
   return async (input, init) => {
-    if (!_h2Fetch) await _h2FetchInit;
-    const fetchFn = base ?? _h2Fetch ?? globalThis.fetch;
+    if (tlsInit) await tlsInit;
+    if (!resolvedTls && !_h2Fetch) await _h2FetchInit;
+    const fetchFn = base ?? resolvedTls ?? _h2Fetch ?? globalThis.fetch;
     const signal = timeout != null
       ? AbortSignal.timeout(timeout)
       : init?.signal;
@@ -351,7 +549,12 @@ export function createObjectsClient(
   const authHeader = `Bearer ${token}`;
   const { onRequest, onResponse } = opts;
 
-  const fetchFn = buildFetch(opts.fetch, opts.retries ?? 2, opts.timeout);
+  const fetchFn = buildFetch(
+    opts.fetch,
+    opts.tls ? buildTlsFetchPromise(opts.tls) : undefined,
+    opts.retries ?? 2,
+    opts.timeout,
+  );
 
   const client = createFetchClient<paths>({
     baseUrl: base,
