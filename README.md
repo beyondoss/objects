@@ -227,4 +227,4 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for on-disk layout, the atomic write path
 
 ## License
 
-AGPLv3. Self-host for any purpose, including commercial use. If you offer this software as a service, you must release your modifications under AGPLv3.
+MIT
