@@ -41,7 +41,9 @@ interface CertBundle {
 
 function toPem(label: string, der: ArrayBuffer): string {
   const b64 = Buffer.from(der).toString("base64");
-  return `-----BEGIN ${label}-----\n${b64.match(/.{1,64}/g)!.join("\n")}\n-----END ${label}-----\n`;
+  return `-----BEGIN ${label}-----\n${
+    b64.match(/.{1,64}/g)!.join("\n")
+  }\n-----END ${label}-----\n`;
 }
 
 async function generateTestCerts(): Promise<CertBundle> {
@@ -157,7 +159,9 @@ async function waitForHealthy(
           },
           (res) => {
             res.resume();
-            resolve((res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300);
+            resolve(
+              (res.statusCode ?? 0) >= 200 && (res.statusCode ?? 0) < 300,
+            );
           },
         );
         req.on("error", () => resolve(false));
@@ -208,9 +212,8 @@ beforeAll(async () => {
   rootToken = randomUUID();
   serverUrl = `https://127.0.0.1:${httpPort}`;
 
-  const binaryPath =
-    process.env["BEYOND_OBJECTS_BINARY"] ??
-    resolve(__dirname, "../../../target/debug/beyond-objects");
+  const binaryPath = process.env["BEYOND_OBJECTS_BINARY"]
+    ?? resolve(__dirname, "../../../target/debug/beyond-objects");
 
   serverProcess = spawn(binaryPath, ["serve"], {
     env: {
@@ -236,7 +239,12 @@ beforeAll(async () => {
     );
   });
 
-  await waitForHealthy(serverUrl, certs.caPem, certs.clientCertPem, certs.clientKeyPem);
+  await waitForHealthy(
+    serverUrl,
+    certs.caPem,
+    certs.clientCertPem,
+    certs.clientKeyPem,
+  );
 }, 60_000);
 
 afterAll(async () => {

@@ -269,8 +269,8 @@ function buildTlsFetchPromise(
   // Deno
   const g = globalThis as any;
   if (
-    typeof g.Deno !== "undefined" &&
-    typeof g.Deno.createHttpClient === "function"
+    typeof g.Deno !== "undefined"
+    && typeof g.Deno.createHttpClient === "function"
   ) {
     const client = g.Deno.createHttpClient({
       caCerts: cas,
@@ -304,7 +304,9 @@ function buildTlsFetchPromise(
             dispatcher: agent,
           }) as Promise<Response>;
         }
-        return f(url, { ...(init ?? {}), dispatcher: agent }) as Promise<Response>;
+        return f(url, { ...(init ?? {}), dispatcher: agent }) as Promise<
+          Response
+        >;
       };
     })
     .catch(() =>
@@ -322,25 +324,29 @@ function buildTlsFetchPromise(
             const href = isRequest
               ? (url as Request).url
               : url instanceof URL
-                ? url.href
-                : (url as string);
+              ? url.href
+              : (url as string);
             const parsed = new URL(href);
             const method = (
-              init?.method ??
-              (isRequest ? (url as Request).method : "GET")
+              init?.method
+                ?? (isRequest ? (url as Request).method : "GET")
             ).toUpperCase();
 
             // Merge headers: Request headers first, then init.headers on top
             const headersRecord: Record<string, string> = {};
             if (isRequest) {
               (url as Request).headers.forEach(
-                (v: string, k: string) => { headersRecord[k] = v; },
+                (v: string, k: string) => {
+                  headersRecord[k] = v;
+                },
               );
             }
             const initHeaders = init?.headers;
             if (initHeaders != null) {
               if (initHeaders instanceof Headers) {
-                initHeaders.forEach((v, k) => { headersRecord[k] = v; });
+                initHeaders.forEach((v, k) => {
+                  headersRecord[k] = v;
+                });
               } else if (Array.isArray(initHeaders)) {
                 for (const [k, v] of initHeaders as [string, string][]) {
                   headersRecord[k] = v;
@@ -361,8 +367,8 @@ function buildTlsFetchPromise(
             if (tls.key != null) tlsOpts["key"] = tls.key;
 
             // Determine body: init.body wins, then Request body
-            const rawBody = init?.body ??
-              (isRequest ? (url as Request).body : null);
+            const rawBody = init?.body
+              ?? (isRequest ? (url as Request).body : null);
 
             return new Promise((resolve, reject) => {
               const options = {
@@ -379,9 +385,11 @@ function buildTlsFetchPromise(
                 res.on("end", () => {
                   const body = Buffer.concat(chunks);
                   const headers = new Headers();
-                  for (const [k, v] of Object.entries(
-                    res.headers as Record<string, string | string[]>,
-                  )) {
+                  for (
+                    const [k, v] of Object.entries(
+                      res.headers as Record<string, string | string[]>,
+                    )
+                  ) {
                     const vals = Array.isArray(v) ? v : [v];
                     for (const val of vals) headers.append(k, val);
                   }
