@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod handoff;
 pub mod metrics;
 pub mod middleware;
 pub mod routes;
@@ -289,7 +290,7 @@ pub async fn serve(config: Config) -> Result<()> {
         service_name: "beyond-objects".into(),
         sample_rate: config.otlp_sample_rate,
     };
-    let _otel_guard = telemetry::init(&otel_config, vec![], &config.log_level)?;
+    let otel_guard = telemetry::init(&otel_config, vec![], &config.log_level)?;
 
     if config.public_url.is_none() {
         tracing::warn!(
@@ -299,8 +300,56 @@ pub async fn serve(config: Config) -> Result<()> {
         );
     }
 
+    // Decide our role before opening anything: a Successor must wait for the
+    // supervisor's `Begin` cue before acquiring the data-dir lock, since the
+    // incumbent still holds it until SealComplete. The typestate chain
+    // (Successor → HandshookSuccessor → BegunSuccessor) makes out-of-order
+    // calls compile-time impossible.
+    let build_id = env!("CARGO_PKG_VERSION").as_bytes().to_vec();
+    let (mut inherited_listeners, mut successor) = match ::handoff::detect_role()
+        .map_err(|e| anyhow::anyhow!("handoff::detect_role: {e}"))?
+    {
+        ::handoff::Role::ColdStart { inherited } => {
+            tracing::info!(
+                inherited_listeners = ?inherited.names(),
+                "starting in cold-start mode"
+            );
+            (inherited, None)
+        }
+        ::handoff::Role::Successor(s) => {
+            let s = s
+                .handshake(build_id.clone())
+                .map_err(|e| anyhow::anyhow!("handshake: {e}"))?;
+            tracing::info!(handoff_id = %s.handoff_id(), "handshake complete; waiting for Begin");
+            let s = s
+                .wait_for_begin()
+                .map_err(|e| anyhow::anyhow!("wait_for_begin: {e}"))?;
+            tracing::info!(
+                handoff_id = %s.handoff_id(),
+                "Begin received; proceeding with successor startup"
+            );
+            (::handoff::role::InheritedListeners::default(), Some(s))
+        }
+    };
+
     tokio::fs::create_dir_all(&config.data_dir).await?;
     tokio::fs::create_dir_all(&config.index_dir).await?;
+
+    // Best-effort: create the parent of the handoff control socket so a
+    // fresh deploy that hasn't set up systemd's RuntimeDirectory= doesn't
+    // hit a confusing "bind: permission denied". If the parent isn't
+    // writable, the bind below will surface the real error.
+    if let Some(parent) = config.handoff_socket_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+
+    // Acquire the data-dir lock. For a Successor this succeeds immediately
+    // because the prior incumbent has already released it (post-SealComplete).
+    // For a Cold Start we break stale pidfiles from crashed predecessors.
+    let data_dir_lock = ::handoff::DataDirLock::acquire_or_break_stale(&config.data_dir)
+        .map_err(|e| anyhow::anyhow!("acquire data-dir lock {}: {e}", config.data_dir.display()))?;
 
     let storage = if config.sync_linger_ms > 0 {
         let linger = std::time::Duration::from_millis(config.sync_linger_ms);
@@ -351,18 +400,36 @@ pub async fn serve(config: Config) -> Result<()> {
 
     let address = config.address.clone();
     let drain_timeout_secs = config.drain_timeout_secs;
+    let handoff_socket_path = config.handoff_socket_path.clone();
     let state_tls_cert = config.tls_cert.clone();
     let state_tls_key = config.tls_key.clone();
     let state_tls_ca = config.tls_ca.clone();
     let state = AppState {
         config: Arc::new(config),
         storage,
-        index,
+        index: index.clone(),
         metrics: Arc::new(metrics::Metrics::new()),
     };
+    let metrics = state.metrics.clone();
 
     let app = build_router(state);
-    let listener = tokio::net::TcpListener::bind(&address).await?;
+
+    // Prefer the inherited listener (from the supervisor, either at cold start
+    // or via the successor handshake) over a fresh bind so the kernel SYN
+    // queue carries over.
+    let listener = match handoff::take_http_listener(&mut successor, &mut inherited_listeners)
+        .map_err(|e| anyhow::anyhow!("inherit http listener: {e}"))?
+    {
+        Some(l) => {
+            tracing::info!(addr = ?l.local_addr().ok(), "HTTP listening on inherited fd");
+            l
+        }
+        None => {
+            tracing::info!(address = %address, "HTTP listening on fresh bind");
+            tokio::net::TcpListener::bind(&address).await?
+        }
+    };
+
     let tls = match (&state_tls_cert, &state_tls_key, &state_tls_ca) {
         (Some(cert), Some(key), Some(ca)) => Some((cert.clone(), key.clone(), ca.clone())),
         (None, None, None) => None,
@@ -372,15 +439,80 @@ pub async fn serve(config: Config) -> Result<()> {
     };
     tracing::info!(address = %address, tls = tls.is_some(), "listening");
 
+    // Build the handoff control thread's view of the world. `accept_closed`
+    // is shared with both the plaintext PausableListener and the TLS accept
+    // loop so they stop dispatching new connections during a drain.
+    let accept_closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let objects_handoff =
+        handoff::ObjectsHandoff::new(accept_closed.clone(), index.clone(), metrics.clone());
+
+    // Test hook: simulate a successor crash *before* Ready so the supervisor
+    // hits the ResumeAfterAbort path and the old incumbent has to recover
+    // for real. Honored only when the env var is set; production never sets it.
+    if successor.is_some() && std::env::var("OBJECTS_TEST_PANIC_BEFORE_READY").is_ok() {
+        tracing::warn!("OBJECTS_TEST_PANIC_BEFORE_READY set; exiting before announce_and_bind");
+        std::process::exit(42);
+    }
+
+    // Bind the control socket. For a successor we go through
+    // `announce_and_bind` so Ready is sent before we touch the path; for
+    // cold start we go directly to `bind_cold_start`. The successor path's
+    // bind happens AFTER Ready (and thus after the supervisor will commit
+    // the prior incumbent), so a successor that dies pre-Ready never touches
+    // the path.
+    let incumbent = match successor.take() {
+        Some(s) => s
+            .announce_and_bind(
+                handoff::readiness_snapshot(&address),
+                &handoff_socket_path,
+                data_dir_lock,
+            )
+            .map_err(|e| anyhow::anyhow!("announce_and_bind: {e}"))?,
+        None => ::handoff::Incumbent::bind_cold_start(&handoff_socket_path, data_dir_lock)
+            .map_err(|e| anyhow::anyhow!("bind handoff control socket: {e}"))?,
+    }
+    .with_build_id(build_id);
+
+    // Run the incumbent control loop on tokio's blocking pool. On Ok(()) the
+    // supervisor has committed; signal the serve loop to shut down gracefully.
+    let (commit_tx, commit_rx) = tokio::sync::oneshot::channel::<()>();
+    let metrics_for_handoff = metrics.clone();
+    tokio::task::spawn_blocking(move || match incumbent.serve(objects_handoff) {
+        Ok(()) => {
+            metrics_for_handoff
+                .handoff_handoffs_total
+                .with_label_values(&["committed"])
+                .inc();
+            tracing::info!("handoff committed; signaling main to exit");
+            let _ = commit_tx.send(());
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "handoff control thread exited with error");
+        }
+    });
+
     if let Some((cert, key, ca)) = tls {
-        serve_tls(listener, &cert, &key, &ca, app).await?;
+        serve_tls(listener, &cert, &key, &ca, app, accept_closed, commit_rx).await?;
     } else {
-        // Pair a oneshot with the shutdown future so we can start the drain timer
-        // only after the signal fires, not from process start.
+        let pausable = handoff::PausableListener {
+            inner: listener,
+            accept_closed,
+        };
+
+        // Pair a oneshot with the shutdown signal so the drain timer arms only
+        // when shutdown was signal-driven (not commit-driven — at that point
+        // the handoff thread has already drained + sealed, and any in-flight
+        // connections will close as the process exits).
         let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
-        let serve = axum::serve(listener, app).with_graceful_shutdown(async move {
-            shutdown_signal().await;
-            signal_tx.send(()).ok();
+        let serve = axum::serve(pausable, app).with_graceful_shutdown(async move {
+            tokio::select! {
+                _ = shutdown_signal() => {
+                    signal_tx.send(()).ok();
+                }
+                _ = commit_rx => {
+                    tracing::info!("commit-driven shutdown; draining connections");
+                }
+            }
         });
 
         if drain_timeout_secs > 0 {
@@ -401,7 +533,18 @@ pub async fn serve(config: Config) -> Result<()> {
         }
     }
 
-    Ok(())
+    // The `Incumbent::serve` blocking thread is parked reading the control
+    // socket and cannot be cancelled by dropping the tokio runtime. Without
+    // this exit call, a SIGTERM that triggers graceful shutdown leaves the
+    // process alive on its detached blocking thread until k8s/systemd
+    // SIGKILLs it. Matches kv's sync-main behavior where main returning IS
+    // process exit.
+    //
+    // `process::exit(0)` skips all Rust destructors, so the OTel guard's
+    // Drop (which flushes buffered spans with a 5s deadline) would not run.
+    // Drop it explicitly first.
+    drop(otel_guard);
+    std::process::exit(0);
 }
 
 async fn shutdown_signal() {
@@ -444,12 +587,15 @@ async fn serve_tls(
     key_path: &str,
     ca_path: &str,
     app: Router,
+    accept_closed: Arc<std::sync::atomic::AtomicBool>,
+    commit_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<()> {
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use hyper_util::server::conn::auto::Builder;
     use rustls::RootCertStore;
     use rustls::ServerConfig;
     use rustls::server::WebPkiClientVerifier;
+    use std::sync::atomic::Ordering;
     use tokio_rustls::TlsAcceptor;
 
     let server_certs = tls_load_certs(cert_path)?;
@@ -476,7 +622,28 @@ async fn serve_tls(
 
     let acceptor = TlsAcceptor::from(std::sync::Arc::new(cfg));
 
+    // Unify the signal-driven and commit-driven shutdown triggers. Mirrors
+    // the plaintext path so behavior is identical across modes.
+    let shutdown = async {
+        tokio::select! {
+            _ = shutdown_signal() => {}
+            _ = commit_rx => {
+                tracing::info!("commit-driven shutdown; closing TLS accept loop");
+            }
+        }
+    };
+    tokio::pin!(shutdown);
+
     loop {
+        // During a handoff drain, suspend new accepts instead of exiting —
+        // the kernel SYN queue absorbs incoming connections until the
+        // successor's accept on the inherited FD drains them.
+        if accept_closed.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => continue,
+                _ = &mut shutdown => break,
+            }
+        }
         tokio::select! {
             result = listener.accept() => {
                 let (tcp, _) = result?;
@@ -496,19 +663,26 @@ async fn serve_tls(
                     }
                 });
             }
-            _ = shutdown_signal() => break,
+            _ = &mut shutdown => break,
         }
     }
     Ok(())
 }
 
+/// Spin up the HTTP server on a pre-bound listener with optional TLS. Used by
+/// in-process tests that bypass the handoff lifecycle. The handoff machinery
+/// is intentionally *not* wired here — these calls never see a supervisor.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     tls: Option<(String, String, String)>,
     app: Router,
 ) -> Result<()> {
     if let Some((cert, key, ca)) = tls {
-        serve_tls(listener, &cert, &key, &ca, app).await
+        // No commit channel, no accept_closed gate — pass inert versions so
+        // the path runs end-to-end without a handoff control thread.
+        let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let inert = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        serve_tls(listener, &cert, &key, &ca, app, inert, rx).await
     } else {
         axum::serve(listener, app).await?;
         Ok(())

@@ -24,7 +24,7 @@ pub struct ReconcileStats {
 ///
 /// fjall is synchronous; callers in async context should use `tokio::task::spawn_blocking`.
 pub struct Index {
-    _keyspace: fjall::Keyspace,
+    keyspace: fjall::Keyspace,
     partition: fjall::PartitionHandle,
 }
 
@@ -42,9 +42,17 @@ impl Index {
         let partition =
             keyspace.open_partition("objects", fjall::PartitionCreateOptions::default())?;
         Ok(Self {
-            _keyspace: keyspace,
+            keyspace,
             partition,
         })
+    }
+
+    /// Synchronously flush the keyspace's journal to disk. fjall's default
+    /// config persists per-write, so this is defensive — load-bearing only if
+    /// a future config opts into lazy flushes.
+    pub fn persist(&self) -> Result<()> {
+        self.keyspace.persist(fjall::PersistMode::SyncAll)?;
+        Ok(())
     }
 
     fn encode(bucket: &str, key: &str) -> Vec<u8> {

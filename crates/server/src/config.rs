@@ -83,6 +83,15 @@ pub struct Config {
     /// Path to the PEM-encoded CA certificate used to verify client certificates.
     #[arg(long, env = "BEYOND_TLS_CA")]
     pub tls_ca: Option<String>,
+
+    /// Unix-domain socket where the handoff control channel is exposed. The
+    /// supervisor connects here to drive zero-downtime binary swaps.
+    #[arg(
+        long,
+        env = "OBJECTS_HANDOFF_SOCKET_PATH",
+        default_value = "/run/beyond/objects/control.sock"
+    )]
+    pub handoff_socket_path: PathBuf,
 }
 
 impl std::fmt::Debug for Config {
@@ -101,6 +110,7 @@ impl std::fmt::Debug for Config {
             .field("otlp_sample_rate", &self.otlp_sample_rate)
             .field("gc_temp_ttl_secs", &self.gc_temp_ttl_secs)
             .field("gc_multipart_ttl_secs", &self.gc_multipart_ttl_secs)
+            .field("handoff_socket_path", &self.handoff_socket_path)
             .finish()
     }
 }

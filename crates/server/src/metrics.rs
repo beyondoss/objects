@@ -119,6 +119,9 @@ const HTTP_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.
 const STORAGE_BUCKETS: &[f64] = &[
     0.0001, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
 ];
+/// Handoff lifecycle durations — drain typically tens of ms, seal sub-second,
+/// but allow headroom for unusually slow workloads.
+const HANDOFF_BUCKETS: &[f64] = &[0.001, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0];
 
 define_metrics! {
     pub struct Metrics {
@@ -142,5 +145,18 @@ define_metrics! {
         // outcome label: completed | aborted
         counter_vec multipart_uploads_total("objects_multipart_uploads_total")["outcome"]
             => "Multipart upload sessions that reached a terminal state (completed or aborted)",
+        // result label: committed | seal_failed | resumed
+        counter_vec handoff_handoffs_total("handoff_handoffs_total")["result"]
+            => "Handoff attempts grouped by outcome",
+        counter handoff_seal_failures_total("handoff_seal_failures_total")
+            => "Total seal failures during handoff",
+        counter handoff_rolled_back_total("handoff_rolled_back_total")
+            => "Total handoffs that ran resume_after_abort on the incumbent",
+        histogram handoff_drain_seconds("handoff_drain_seconds")
+            buckets = HANDOFF_BUCKETS
+            => "Wall-clock duration of the drain phase, in seconds",
+        histogram handoff_seal_seconds("handoff_seal_seconds")
+            buckets = HANDOFF_BUCKETS
+            => "Wall-clock duration of the seal phase, in seconds",
     }
 }

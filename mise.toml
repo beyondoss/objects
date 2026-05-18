@@ -41,6 +41,10 @@ run = "cargo test --lib"
 [tasks."test:integration:rs"]
 run = "cargo test --test rest --test s3"
 
+[tasks."test:handoff:rs"]
+description = "End-to-end handoff tests (real beyond-objects subprocesses, listener-FD inheritance, flock dance, data persistence across binary swap). Serial because each test spawns 2+ processes with their own ephemeral ports."
+run = "cargo test --test handoff_smoke --test handoff_e2e --test handoff_rigorous -- --test-threads=1"
+
 [tasks."test:integration:ts"]
 description = "Run TypeScript SDK e2e tests against a freshly-built debug server"
 run = "npm test"

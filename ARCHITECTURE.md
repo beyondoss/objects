@@ -321,22 +321,23 @@ Object write routes (PUT, multipart part upload) remove both the body limit and 
 
 ## Configuration
 
-| Variable                | Default                 | What It Controls at Runtime                                                              |
-| ----------------------- | ----------------------- | ---------------------------------------------------------------------------------------- |
-| `OBJECTS_ROOT_TOKEN`    | (required)              | Root auth token; also the HMAC key for derived tokens                                    |
-| `OBJECTS_DATA_DIR`      | `/data`                 | Root directory for all bucket subdirectories and `.tmp/`                                 |
-| `OBJECTS_INDEX_DIR`     | `/data/.index`          | Where fjall writes its LSM-tree files                                                    |
-| `ADDRESS`               | `0.0.0.0:9000`          | Public bind address for REST, S3, `/metrics`, and health probes                          |
-| `LOG_LEVEL`             | `info`                  | `tracing` filter directive                                                               |
-| `OTLP_ENABLED`          | `false`                 | Whether to export traces to `OTLP_ENDPOINT`                                              |
-| `OTLP_ENDPOINT`         | `http://localhost:4317` | OTLP collector gRPC address                                                              |
-| `OTLP_SAMPLE_RATE`      | `0.1`                   | Fraction of traces sampled (0.0 = never, 1.0 = always); only effective when OTLP_ENABLED |
-| `OBJECTS_URL`           | (none)                  | Public base URL for object URLs returned by SDK `client.url(key)`                        |
-| `SYNC_LINGER_MS`        | `5`                     | fdatasync batching window; 0 = inline sync per upload (see Sync Linger Batching)         |
-| `DRAIN_TIMEOUT_SECS`    | `30`                    | Seconds to wait for in-flight requests to drain after shutdown signal; 0 = wait forever  |
-| `GC_TEMP_TTL_SECS`      | `3600`                  | Min age for `.tmp/` orphans to be eligible for startup GC                                |
-| `GC_MULTIPART_TTL_SECS` | `86400`                 | Min age for incomplete multipart uploads to be eligible for startup GC                   |
-| `ENVIRONMENT`           | (none)                  | `development` enables pretty log output                                                  |
+| Variable                      | Default                            | What It Controls at Runtime                                                              |
+| ----------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
+| `OBJECTS_ROOT_TOKEN`          | (required)                         | Root auth token; also the HMAC key for derived tokens                                    |
+| `OBJECTS_DATA_DIR`            | `/data`                            | Root directory for all bucket subdirectories and `.tmp/`                                 |
+| `OBJECTS_INDEX_DIR`           | `/data/.index`                     | Where fjall writes its LSM-tree files                                                    |
+| `ADDRESS`                     | `0.0.0.0:9000`                     | Public bind address for REST, S3, `/metrics`, and health probes                          |
+| `LOG_LEVEL`                   | `info`                             | `tracing` filter directive                                                               |
+| `OTLP_ENABLED`                | `false`                            | Whether to export traces to `OTLP_ENDPOINT`                                              |
+| `OTLP_ENDPOINT`               | `http://localhost:4317`            | OTLP collector gRPC address                                                              |
+| `OTLP_SAMPLE_RATE`            | `0.1`                              | Fraction of traces sampled (0.0 = never, 1.0 = always); only effective when OTLP_ENABLED |
+| `OBJECTS_URL`                 | (none)                             | Public base URL for object URLs returned by SDK `client.url(key)`                        |
+| `SYNC_LINGER_MS`              | `5`                                | fdatasync batching window; 0 = inline sync per upload (see Sync Linger Batching)         |
+| `DRAIN_TIMEOUT_SECS`          | `30`                               | Seconds to wait for in-flight requests to drain after shutdown signal; 0 = wait forever  |
+| `GC_TEMP_TTL_SECS`            | `3600`                             | Min age for `.tmp/` orphans to be eligible for startup GC                                |
+| `GC_MULTIPART_TTL_SECS`       | `86400`                            | Min age for incomplete multipart uploads to be eligible for startup GC                   |
+| `OBJECTS_HANDOFF_SOCKET_PATH` | `/run/beyond/objects/control.sock` | Unix-domain socket where the handoff supervisor connects to drive zero-downtime swaps    |
+| `ENVIRONMENT`                 | (none)                             | `development` enables pretty log output                                                  |
 
 ## Failure Modes
 
@@ -349,6 +350,65 @@ Object write routes (PUT, multipart part upload) remove both the body limit and 
 | Queue publish failure       | Object is durably written; event is lost                    | Best-effort only; no retry                                     |
 | Disk full                   | write_object fails during streaming; temp file removed      | 500 returned; no partial state visible                         |
 | xattr not supported         | Startup will fail on first write attempt                    | GlideFS always supports xattrs; local ext4/apfs also work      |
+
+## Zero-downtime Restarts (Handoff)
+
+`beyond-objects` integrates the in-house `beyond-handoff` library for binary swaps without dropping the kernel SYN queue. The integration mirrors `beyond-kv`'s ([sibling cohesion](../kv/ARCHITECTURE.md)), adapted to objects' single-tokio-runtime, single-listener shape.
+
+### Roles and process layout
+
+A handoff involves three principals:
+
+- **Supervisor (S)** — long-running parent; binds the listener once, holds its FD across the swap, spawns successors via `fork+exec`.
+- **Incumbent (O)** — the currently-serving process. Holds the data-dir flock; runs an `Incumbent::serve` control thread (on tokio's blocking pool) that talks to S over a Unix-domain control socket.
+- **Successor (N)** — spawned by S during a handoff with `HANDOFF_ROLE=successor` and the inherited listener FD in slot 3. Compile-time-ordered state machine (`Successor → HandshookSuccessor → BegunSuccessor`) gates startup on the protocol.
+
+`detect_role()` at the top of `serve()` decides which path runs. ColdStart consumes any `LISTEN_FDS` env vars (the supervisor's first spawn); Successor handshakes, then blocks on `wait_for_begin()` until S says O has finished `seal`.
+
+### Lifecycle on each handoff
+
+1. S accepts a swap request; spawns N (`fork+exec` with FD slots filled).
+2. N starts, calls `detect_role()` → `Successor`, handshakes with S over its control-socket FD, waits for `Begin`.
+3. S sends `PrepareHandoff` to O.
+4. O's `Incumbent::serve` loop calls `Drainable::drain(deadline)`:
+   - sets `accept_closed = true` (shared with the [`PausableListener`](crates/server/src/handoff.rs) and the TLS accept loop)
+   - polls `http_connections_active` until 0 or the deadline
+   - replies `Drained`
+   - The kernel SYN backlog absorbs incoming connections in this window — they are not dropped, just queued.
+5. S sends `SealRequest`. O calls `Drainable::seal()`, which calls `Index::persist(SyncAll)` (defensive — fjall is durable per-write). The library then releases the data-dir flock and replies `SealComplete`.
+6. S sends `Begin` to N. N acquires the flock (now free), opens its Storage + Index, reconciles, and finally calls `announce_and_bind(snapshot, socket_path, lock)` to send `Ready` and bind the control socket atomically.
+7. S sends `Commit` to O. O's blocking task signals `commit_tx`. The unified shutdown future in `serve()` resolves, axum drains its remaining tasks, the process exits.
+8. The successor's `axum::serve(PausableListener, app).accept()` now drains the SYN backlog. From the kernel's perspective the listener never closed.
+
+### Abort path
+
+If anything between Begin and Commit fails — N exits before `Ready`, the seal returns an error, or S itself disconnects — the library invokes `Drainable::resume_after_abort()` on O: it clears `accept_closed`, re-acquires the flock (if it was released), and continues serving as the authoritative incumbent. No state was transformed by `seal` that needs rolling back.
+
+### Where the code lives
+
+| Concern                                            | File                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------- |
+| `Drainable` impl + `PausableListener`              | `crates/server/src/handoff.rs`                                |
+| Role detection, control-socket bind, serve wire-up | `crates/server/src/lib.rs::serve()`                           |
+| `accept_closed` pause check in TLS path            | `crates/server/src/lib.rs::serve_tls()`                       |
+| Defensive durability flush in `seal()`             | `crates/index/src/lib.rs::Index::persist()`                   |
+| Metrics                                            | `crates/server/src/metrics.rs` (`handoff_*` family)           |
+| Config                                             | `crates/server/src/config.rs` (`OBJECTS_HANDOFF_SOCKET_PATH`) |
+
+### Test-only env hooks
+
+- `OBJECTS_TEST_PANIC_BEFORE_READY=1` — successor exits with code 42 after `wait_for_begin` and before `announce_and_bind`. Exercises the supervisor's abort + incumbent's `resume_after_abort` paths against a real process.
+- `OBJECTS_TEST_FAIL_ONCE_FILE=<path>` — on `seal()`, if the named file exists, unlink it and return `Error::Protocol("seal failed: test hook")`. Validates the `SealFailed` recovery path.
+
+Both are consumed via `std::env::var` in production code (see `lib.rs:serve()` and `handoff.rs:seal()`); production never sets them.
+
+### Why It Behaves This Way
+
+**Why the SYN-queue pause instead of closing the listener.** Closing the listener mid-handoff would RST any waiting connect()s. By suspending `accept()` (the `PausableListener::accept` future just sleeps while `accept_closed` is set), the kernel's listen backlog absorbs incoming connections. When the successor's `axum::serve` starts calling `accept()` on the inherited FD, those queued connections drain into the new process with zero client-visible failures.
+
+**Why `Index::persist()` in `seal()` even though fjall is durable per-write.** Defense in depth, and a single explicit fsync point makes future durability tunings opt-in rather than opt-out. The cost is one fdatasync on a typically-small journal.
+
+**Why `spawn_blocking` and not `std::thread::spawn` for `Incumbent::serve`.** The control thread blocks on `recv` from the Unix socket — exactly the workload tokio's blocking pool is sized for. Putting it there keeps the runtime's worker threads free and means the shutdown story is uniform (the runtime tracks blocking tasks).
 
 ## Why It Behaves This Way
 

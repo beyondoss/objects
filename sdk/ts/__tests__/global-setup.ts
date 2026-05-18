@@ -57,6 +57,7 @@ export async function setup(): Promise<void> {
       OBJECTS_ROOT_TOKEN: rootToken,
       OBJECTS_DATA_DIR: tempDataDir,
       OBJECTS_INDEX_DIR: join(tempDataDir, ".index"),
+      OBJECTS_HANDOFF_SOCKET_PATH: join(tempDataDir, "handoff.sock"),
       ADDRESS: `127.0.0.1:${httpPort}`,
       METRICS_ADDRESS: `127.0.0.1:${metricsPort}`,
       OBJECTS_URL: baseUrl,

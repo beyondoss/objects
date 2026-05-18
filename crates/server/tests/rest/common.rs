@@ -37,6 +37,7 @@ pub fn server() -> &'static TestServer {
                     tls_cert: None,
                     tls_key: None,
                     tls_ca: None,
+                    handoff_socket_path: dir.path().join("control.sock"),
                 };
                 let server = beyond_objects::test_support::start(config)
                     .await

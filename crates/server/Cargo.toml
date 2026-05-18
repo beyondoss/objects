@@ -23,10 +23,12 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 futures = { workspace = true }
+handoff = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+libc = { workspace = true }
 memmap2 = { workspace = true }
 mime = { workspace = true }
 opentelemetry = { workspace = true }
@@ -63,9 +65,10 @@ aws-smithy-async = { version = "1", features = ["rt-tokio"] }
 aws-smithy-runtime = { version = "1", features = ["client", "connector-hyper-0-14-x", "rt-tokio"] }
 aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 rcgen = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
 secrecy = { workspace = true }
 tempfile = { workspace = true }
+ureq = "2"
 
 [[test]]
 name = "rest"

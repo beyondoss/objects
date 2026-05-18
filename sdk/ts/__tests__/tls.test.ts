@@ -221,6 +221,7 @@ beforeAll(async () => {
       OBJECTS_ROOT_TOKEN: rootToken,
       OBJECTS_DATA_DIR: dataDir,
       OBJECTS_INDEX_DIR: indexDir,
+      OBJECTS_HANDOFF_SOCKET_PATH: join(dataDir, "handoff.sock"),
       ADDRESS: `127.0.0.1:${httpPort}`,
       METRICS_ADDRESS: `127.0.0.1:${metricsPort}`,
       OBJECTS_URL: serverUrl,

@@ -110,7 +110,8 @@ impl Storage {
                     content_type.as_deref(),
                     meta.access,
                     &user_metadata,
-                )?;
+                )
+                .map_err(std::io::Error::other)?;
                 rename_noreplace_sync(&tmp, &dest)
             })
             .await

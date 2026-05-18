@@ -94,6 +94,7 @@ async fn start_tls_server(certs: &CertBundle) -> String {
         tls_cert: Some(cert_file.path().to_str().unwrap().to_string()),
         tls_key: Some(key_file.path().to_str().unwrap().to_string()),
         tls_ca: Some(ca_file.path().to_str().unwrap().to_string()),
+        handoff_socket_path: dir.path().join("control.sock"),
     };
 
     tokio::fs::create_dir_all(&config.data_dir).await.unwrap();

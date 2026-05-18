@@ -64,6 +64,10 @@ fn start_server() -> (Server, tokio::runtime::Runtime) {
                 otlp_sample_rate: 1.0,
                 gc_temp_ttl_secs: 3600,
                 gc_multipart_ttl_secs: 86400,
+                tls_cert: None,
+                tls_key: None,
+                tls_ca: None,
+                handoff_socket_path: dir.path().join("control.sock"),
             };
             let server = beyond_objects::test_support::start(config).await.unwrap();
             tx.send((server.url, server.root_token, dir)).unwrap();
