@@ -4,11 +4,9 @@ on:
     # Mondays 14:00 UTC. Weekly cadence — real advisory churn, not per-push theater.
     - cron: "0 14 * * 1"
   workflow_dispatch:
-
 permissions:
   contents: read
   issues: write
-
 jobs:
   cargo-deny:
     runs-on: ubuntu-latest
