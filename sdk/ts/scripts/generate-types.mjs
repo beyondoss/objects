@@ -9,3 +9,4 @@ const spec = resolve(root, "openapi/v1.json");
 const out = resolve(root, "sdk/ts/src/types.ts");
 
 execSync(`npx openapi-typescript ${spec} -o ${out}`, { stdio: "inherit" });
+execSync(`dprint fmt ${out}`, { stdio: "inherit", cwd: root });
