@@ -26,8 +26,10 @@ allow = [
   "MPL-2.0",
   "CC0-1.0",
   "0BSD",
+  "BSL-1.0",
 ]
 confidence-threshold = 0.8
+unused-allowed-license = "allow"
 # Weak-copyleft / corporate-unfriendly licenses are denied by omission from
 # `allow`. Per-crate exceptions (e.g. ring's BoringSSL bits) go in `exceptions`.
 exceptions = []
