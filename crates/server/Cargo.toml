@@ -59,10 +59,16 @@ uuid = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [dev-dependencies]
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls", "rt-tokio"] }
+# `rustls` feature on aws-sdk-s3 expands to aws-smithy-http-client/legacy-rustls-ring,
+# which pins rustls 0.21 + rustls-webpki 0.101 (RUSTSEC-2026-0099 + 0104). Use
+# `default-https-client` instead — that maps to aws-smithy-http-client/rustls-aws-lc
+# (modern rustls 0.23 + rustls-webpki 0.103+, no CVEs). aws-config's `rustls`
+# feature is unrelated and already routes through the modern stack, but the same
+# `default-https-client` swap keeps both sides cohesive.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-smithy-async = { version = "1", features = ["rt-tokio"] }
-aws-smithy-runtime = { version = "1", features = ["client", "connector-hyper-0-14-x", "rt-tokio"] }
+aws-smithy-runtime = { version = "1", features = ["client", "rt-tokio"] }
 aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
 rcgen = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
