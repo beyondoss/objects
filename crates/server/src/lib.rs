@@ -357,6 +357,15 @@ pub async fn serve(config: Config) -> Result<()> {
     } else {
         Storage::new(&config.data_dir)
     };
+
+    // The `default` bucket is auto-managed: clients may PUT/GET against it
+    // without an explicit POST /v1/buckets. Materialize its directory so the
+    // write path's rename target exists. Idempotent.
+    storage
+        .create_bucket("default", beyond_objects_storage::AccessLevel::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("create default bucket: {e}"))?;
+
     let index = Arc::new(Index::open(&config.index_dir)?);
 
     // Reconcile the listing index against the filesystem before serving.
