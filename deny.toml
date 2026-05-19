@@ -8,7 +8,17 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+  # atomic-polyfill — upstream unmaintained, reachable only via
+  # heapless 0.7 → postcard 1 → beyond-handoff. Beyond-handoff's
+  # postcard chain has to update before this drops out; no CVE, dev/dep
+  # tree only.
+  { id = "RUSTSEC-2023-0089", reason = "transitive via heapless 0.7 in beyond-handoff; no safe upgrade until postcard updates" },
+  # rustls-pemfile — upstream retired in favor of rustls-pki-types::pem.
+  # Pulled in by aws-smithy-http-client; no CVE, no client behavior change
+  # planned by AWS SDK yet. Revisit when aws-smithy-http-client migrates.
+  { id = "RUSTSEC-2025-0134", reason = "transitive via aws-smithy-http-client; upstream retired, no safe upgrade" },
+]
 
 [licenses]
 version = 2
