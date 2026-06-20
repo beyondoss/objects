@@ -9,8 +9,11 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
       - name: Set version
@@ -20,8 +23,9 @@ jobs:
           npm version "$VERSION" --no-git-tag-version
       - name: Build
         run: mise run build:ts
+      - name: upgrade npm
+        # OIDC trusted publishing requires npm >= 11.5.1; node LTS ships npm 10.
+        run: npm install -g npm@latest
       - name: Publish
         run: npm publish --access public
         working-directory: sdk/ts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
