@@ -11,10 +11,10 @@ jobs:
       matrix:
         include:
           - runs-on: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
             arch: amd64
           - runs-on: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
             arch: arm64
     runs-on: ${{ matrix.runs-on }}
     steps:
@@ -22,7 +22,7 @@ jobs:
       - uses: jdx/mise-action@v4
       - uses: Swatinem/rust-cache@v2
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p beyond-objects
       - name: Package
         run: |
           VERSION=${GITHUB_REF_NAME#api-v}
