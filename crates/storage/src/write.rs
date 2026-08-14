@@ -74,6 +74,7 @@ impl Storage {
         if let Some(WriteCondition::IfMatch(expected)) = &condition {
             let dest = final_path.clone();
             let expected = expected.clone();
+            let any = expected == "*" || expected == "\"*\"";
             let check = tokio::task::spawn_blocking(move || xattr::get(&dest, xattr::ETAG))
                 .await
                 .map_err(|e| StorageError::Io(std::io::Error::other(e)))?;
@@ -85,6 +86,7 @@ impl Storage {
                         key: key.into(),
                     });
                 }
+                Some(_) if any => {}
                 Some(actual) if actual.as_slice() != expected.as_bytes() => {
                     Storage::cleanup_tmp(&tmp_path).await;
                     return Err(StorageError::EtagMismatch);
@@ -145,13 +147,16 @@ impl Storage {
         }
 
         // Common commit path: xattr write + rename in a single spawn_blocking.
-        // Keeps both blocking syscalls off the async thread and halves the number
-        // of thread-pool round-trips vs calling them separately.
+        // Holds an exclusive flock on `{dest}.lock` so If-Match / If-None-Match
+        // re-check the dest under the lock (check-then-rename was racy).
         let tmp = tmp_path.clone();
         let dest = final_path.clone();
         let etag_c = etag.clone();
         let content_type = meta.content_type.clone();
         let user_metadata = meta.user_metadata.clone();
+        let cond = condition;
+        let bucket_owned = bucket.to_string();
+        let key_owned = key.to_string();
         tokio::task::spawn_blocking(move || {
             xattr::set_object(
                 &tmp,
@@ -160,7 +165,11 @@ impl Storage {
                 meta.access,
                 &user_metadata,
             )?;
-            std::fs::rename(&tmp, &dest).map_err(StorageError::Io)
+            if cond.is_some() {
+                commit_locked(&tmp, &dest, cond, bucket_owned, key_owned)
+            } else {
+                std::fs::rename(&tmp, &dest).map_err(StorageError::Io)
+            }
         })
         .await
         .map_err(|e| StorageError::Io(std::io::Error::other(e)))??;
@@ -202,6 +211,58 @@ pub(crate) async fn stream_to_tmp(
     let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
     tracing::Span::current().record("size_bytes", total);
     Ok((etag, total, file))
+}
+
+fn commit_locked(
+    tmp: &std::path::Path,
+    dest: &std::path::Path,
+    cond: Option<WriteCondition>,
+    bucket: String,
+    key: String,
+) -> Result<()> {
+    use std::fs::OpenOptions;
+    use std::os::unix::io::AsRawFd;
+
+    // Append ".lock" — do not use with_extension, which replaces ".json" etc.
+    let mut lock_path = dest.as_os_str().to_os_string();
+    lock_path.push(".lock");
+    let lock_path = std::path::PathBuf::from(lock_path);
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(StorageError::Io)?;
+    let rc = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        return Err(StorageError::Io(std::io::Error::last_os_error()));
+    }
+    let _hold = lock;
+
+    match cond {
+        Some(WriteCondition::IfNoneMatch) if dest.exists() => {
+            return Err(StorageError::ObjectExists { bucket, key });
+        }
+        Some(WriteCondition::IfMatch(expected)) => {
+            let any = expected == "*" || expected == "\"*\"";
+            match xattr::get(dest, xattr::ETAG)? {
+                None => {
+                    return Err(StorageError::NotFound { bucket, key });
+                }
+                Some(_) if any => {}
+                Some(actual) if actual.as_slice() != expected.as_bytes() => {
+                    return Err(StorageError::EtagMismatch);
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    std::fs::rename(tmp, dest).map_err(StorageError::Io)?;
+    let _ = std::fs::remove_file(&lock_path);
+    Ok(())
 }
 
 /// Atomic create-or-fail rename using `renameat2(RENAME_NOREPLACE)`.
