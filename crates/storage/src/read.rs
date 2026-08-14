@@ -137,6 +137,12 @@ impl Storage {
             Storage::cleanup_tmp(&tmp_path).await;
             return Err(e.into());
         }
+        if let Ok(f) = fs::File::open(&tmp_path).await
+            && let Err(e) = f.sync_data().await
+        {
+            Storage::cleanup_tmp(&tmp_path).await;
+            return Err(e.into());
+        }
         let attrs = xattr::read_object(&src)?;
         if let Err(e) = xattr::set_object(
             &tmp_path,
