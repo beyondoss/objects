@@ -1,5 +1,6 @@
 use std::io;
 use std::path::Path;
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
