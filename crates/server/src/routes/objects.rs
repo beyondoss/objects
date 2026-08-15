@@ -721,14 +721,14 @@ fn parse_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Api
 
 /// Byte window for a GET: `(start, length)`.
 ///
-/// `range` is the inclusive `(start, end)` from [`parse_range`].
+/// `range` is the inclusive `(start, end)` from [`parse_range`]. A missing
+/// Range is the exclusive window `(0, size)` — same as S3 `GetObject`.
+/// Inclusive-end (`size.saturating_sub(1) + 1`) turns size=0 into length 1
+/// and mmap's one byte past EOF.
 fn get_window(size: u64, range: Option<(u64, u64)>) -> (u64, u64) {
     match range {
         Some((s, e)) => (s, e.saturating_sub(s).saturating_add(1)),
-        None => {
-            let end_inclusive = size.saturating_sub(1);
-            (0, end_inclusive.saturating_add(1))
-        }
+        None => (0, size),
     }
 }
 
