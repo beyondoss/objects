@@ -97,7 +97,12 @@ impl Storage {
         validate_key(key)?;
         let path = self.data_dir.join(bucket).join(key);
         match fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(p) = path.parent() {
+                    crate::sync::sync_dir(p).await?;
+                }
+                Ok(())
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
         }
@@ -160,6 +165,9 @@ impl Storage {
             fs::create_dir_all(p).await?;
         }
         fs::rename(&tmp_path, &dst).await?;
+        if let Some(p) = dst.parent() {
+            crate::sync::sync_dir(p).await?;
+        }
         Ok(attrs.etag)
     }
 
@@ -190,6 +198,9 @@ impl Storage {
             fs::create_dir_all(p).await?;
         }
         fs::rename(&src, &dst).await?;
+        if let Some(p) = dst.parent() {
+            crate::sync::sync_dir(p).await?;
+        }
         Ok(())
     }
 }

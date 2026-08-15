@@ -168,7 +168,11 @@ impl Storage {
             if cond.is_some() {
                 commit_locked(&tmp, &dest, cond, bucket_owned, key_owned)
             } else {
-                std::fs::rename(&tmp, &dest).map_err(StorageError::Io)
+                std::fs::rename(&tmp, &dest).map_err(StorageError::Io)?;
+                if let Some(p) = dest.parent() {
+                    crate::sync::sync_dir_blocking(p).map_err(StorageError::Io)?;
+                }
+                Ok(())
             }
         })
         .await
@@ -261,6 +265,9 @@ fn commit_locked(
     }
 
     std::fs::rename(tmp, dest).map_err(StorageError::Io)?;
+    if let Some(p) = dest.parent() {
+        crate::sync::sync_dir_blocking(p).map_err(StorageError::Io)?;
+    }
     let _ = std::fs::remove_file(&lock_path);
     Ok(())
 }
@@ -343,6 +350,25 @@ mod tests {
         let info = s.head_object("bucket", "hello.txt").await.unwrap();
         assert_eq!(info.size, 5);
         assert_eq!(info.etag, etag);
+    }
+
+    #[tokio::test]
+    async fn write_object_fsyncs_the_parent_directory() {
+        crate::sync::DIR_FSYNCS.store(0, std::sync::atomic::Ordering::SeqCst);
+        let (s, _dir) = make_storage().await;
+        s.write_object(
+            "bucket",
+            "hello.txt",
+            Cursor::new(b"hello"),
+            ObjectMeta::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::sync::DIR_FSYNCS.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "PUT rename must fsync the parent directory"
+        );
     }
 
     #[tokio::test]

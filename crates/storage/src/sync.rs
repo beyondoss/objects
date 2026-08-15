@@ -1,10 +1,31 @@
 use std::io;
+use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::join_all;
 use tokio::fs;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout_at;
+
+#[cfg(test)]
+pub(crate) static DIR_FSYNCS: AtomicUsize = AtomicUsize::new(0);
+
+/// fsync a directory so a rename/unlink dirent is durable (Pedra F17).
+pub(crate) fn sync_dir_blocking(dir: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    DIR_FSYNCS.fetch_add(1, Ordering::SeqCst);
+    let f = std::fs::File::open(dir)?;
+    f.sync_all()
+}
+
+pub(crate) async fn sync_dir(dir: &Path) -> io::Result<()> {
+    let d = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || sync_dir_blocking(&d))
+        .await
+        .unwrap_or_else(|e| Err(io::Error::other(e)))
+}
 
 pub(crate) struct SyncRequest {
     file: fs::File,
