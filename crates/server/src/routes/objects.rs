@@ -248,19 +248,19 @@ pub async fn get_object(
     let mut resp_headers = build_object_headers(&info);
 
     let range = parse_range(&headers, info.size)?;
-    let (status, start, end_inclusive) = match range {
-        Some((s, e)) => {
-            resp_headers.insert(
-                header::CONTENT_RANGE,
-                HeaderValue::from_str(&format!("bytes {s}-{e}/{}", info.size))
-                    .map_err(|_| ApiError::Internal(anyhow::anyhow!("content-range encode")))?,
-            );
-            (StatusCode::PARTIAL_CONTENT, s, e)
-        }
-        None => (StatusCode::OK, 0, info.size.saturating_sub(1)),
+    if let Some((s, e)) = range {
+        resp_headers.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes {s}-{e}/{}", info.size))
+                .map_err(|_| ApiError::Internal(anyhow::anyhow!("content-range encode")))?,
+        );
+    }
+    let status = if range.is_some() {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
     };
-
-    let length = end_inclusive.saturating_sub(start).saturating_add(1);
+    let (start, length) = get_window(info.size, range);
     resp_headers.insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&length.to_string())
@@ -717,4 +717,41 @@ fn parse_range(headers: &HeaderMap, size: u64) -> Result<Option<(u64, u64)>, Api
         return Err(ApiError::RangeNotSatisfiable);
     }
     Ok(Some((start, end)))
+}
+
+/// Byte window for a GET: `(start, length)`.
+///
+/// `range` is the inclusive `(start, end)` from [`parse_range`].
+fn get_window(size: u64, range: Option<(u64, u64)>) -> (u64, u64) {
+    match range {
+        Some((s, e)) => (s, e.saturating_sub(s).saturating_add(1)),
+        None => {
+            let end_inclusive = size.saturating_sub(1);
+            (0, end_inclusive.saturating_add(1))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_window;
+
+    #[test]
+    fn empty_object_full_get_is_zero_bytes() {
+        assert_eq!(
+            get_window(0, None),
+            (0, 0),
+            "GET of a 0-byte object must not ask mmap for 1 byte"
+        );
+    }
+
+    #[test]
+    fn nonempty_full_get_is_the_object_size() {
+        assert_eq!(get_window(10, None), (0, 10));
+    }
+
+    #[test]
+    fn inclusive_range_length() {
+        assert_eq!(get_window(10, Some((2, 5))), (2, 4));
+    }
 }

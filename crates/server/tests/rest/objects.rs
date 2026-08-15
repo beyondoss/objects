@@ -76,6 +76,65 @@ async fn put_get_head_delete_roundtrip() {
     assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
 }
 
+/// PUT of an empty object is legal. GET without Range must return
+/// Content-Length 0 and an empty body — not mmap 1 byte past EOF
+/// (Darwin 500, Linux a one-byte zero body).
+#[tokio::test]
+async fn empty_object_get_is_zero_bytes() {
+    let bucket = unique_bucket("empty");
+    create_bucket(&bucket, "private").await;
+    let token = bucket_token(&bucket);
+
+    let res = client()
+        .put(url(&format!("/v1/{bucket}/marker")))
+        .bearer_auth(&token)
+        .header("content-type", "application/octet-stream")
+        .body(Vec::<u8>::new())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::CREATED);
+    let put_body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(put_body["size"], 0);
+
+    let res = client()
+        .head(url(&format!("/v1/{bucket}/marker")))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("0")
+    );
+
+    let res = client()
+        .get(url(&format!("/v1/{bucket}/marker")))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        reqwest::StatusCode::OK,
+        "GET empty must not 500 (mmap past EOF)"
+    );
+    assert_eq!(
+        res.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("0")
+    );
+    let bytes = res.bytes().await.unwrap();
+    assert!(
+        bytes.is_empty(),
+        "GET empty must not invent a byte: {bytes:?}"
+    );
+}
+
 #[tokio::test]
 async fn private_object_requires_auth() {
     let bucket = unique_bucket("priv");
