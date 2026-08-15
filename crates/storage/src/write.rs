@@ -346,6 +346,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_object_fsyncs_the_parent_directory() {
+        crate::sync::DIR_FSYNCS.store(0, std::sync::atomic::Ordering::SeqCst);
+        let (s, _dir) = make_storage().await;
+        s.write_object(
+            "bucket",
+            "hello.txt",
+            Cursor::new(b"hello"),
+            ObjectMeta::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            crate::sync::DIR_FSYNCS.load(std::sync::atomic::Ordering::SeqCst) > 0,
+            "PUT rename must fsync the parent directory"
+        );
+    }
+
+    #[tokio::test]
     async fn if_none_match_blocks_overwrite() {
         let (s, _dir) = make_storage().await;
         s.write_object(
