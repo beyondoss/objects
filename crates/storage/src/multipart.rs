@@ -150,6 +150,9 @@ impl Storage {
 
         let final_path = self.part_path(upload_id, part_number);
         fs::rename(&tmp_path, &final_path).await?;
+        if let Some(p) = final_path.parent() {
+            crate::sync::sync_dir(p).await?;
+        }
         Ok(etag)
     }
 
@@ -316,6 +319,9 @@ impl Storage {
             fs::create_dir_all(parent).await?;
         }
         fs::rename(&tmp_path, &final_path).await?;
+        if let Some(p) = final_path.parent() {
+            crate::sync::sync_dir(p).await?;
+        }
 
         // Best-effort cleanup. If this fails, gc_multipart_uploads will handle it.
         if let Err(e) = fs::remove_dir_all(&dir).await {

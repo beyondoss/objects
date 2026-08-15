@@ -168,7 +168,11 @@ impl Storage {
             if cond.is_some() {
                 commit_locked(&tmp, &dest, cond, bucket_owned, key_owned)
             } else {
-                std::fs::rename(&tmp, &dest).map_err(StorageError::Io)
+                std::fs::rename(&tmp, &dest).map_err(StorageError::Io)?;
+                if let Some(p) = dest.parent() {
+                    crate::sync::sync_dir_blocking(p).map_err(StorageError::Io)?;
+                }
+                Ok(())
             }
         })
         .await
@@ -261,6 +265,9 @@ fn commit_locked(
     }
 
     std::fs::rename(tmp, dest).map_err(StorageError::Io)?;
+    if let Some(p) = dest.parent() {
+        crate::sync::sync_dir_blocking(p).map_err(StorageError::Io)?;
+    }
     let _ = std::fs::remove_file(&lock_path);
     Ok(())
 }
